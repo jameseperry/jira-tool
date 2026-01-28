@@ -13,17 +13,45 @@ A command-line interface for interacting with JIRA Cloud API.
 
 ## Installation
 
-```bash
-# Clone the repository
-git clone https://github.com/yourusername/jira-tool.git
-cd jira-tool
+### Using pipx (Recommended)
 
-# Create virtual environment
+[pipx](https://pipx.pypa.io/) installs the tool in an isolated environment while making it available globally:
+
+```bash
+# Install pipx if you don't have it
+pip install --user pipx
+pipx ensurepath  # restart your shell after this
+
+# Install jira-tool
+pipx install git+https://github.com/jameseperry/jira-tool.git
+
+# Or from a local clone
+pipx install /path/to/jira-tool
+
+# For development (editable install - picks up code changes)
+pipx install -e /path/to/jira-tool
+```
+
+### Using pip
+
+```bash
+# Install globally (not recommended)
+pip install git+https://github.com/jameseperry/jira-tool.git
+
+# Or in a virtual environment
 python -m venv .venv
 source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+pip install git+https://github.com/jameseperry/jira-tool.git
+```
 
-# Install in development mode
-pip install -e .
+### From Source (Development)
+
+```bash
+git clone https://github.com/jameseperry/jira-tool.git
+cd jira-tool
+python -m venv .venv
+source .venv/bin/activate
+pip install -e ".[dev]"
 ```
 
 ## Configuration
