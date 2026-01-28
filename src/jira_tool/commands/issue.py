@@ -265,7 +265,7 @@ def issue():
 
 
 @issue.command("get")
-@click.argument("issue_key")
+@click.argument("issue_keys", nargs=-1, required=True)
 @click.option(
     "--raw", is_flag=True, default=False,
     help="Output raw API response instead of simplified view"
@@ -281,30 +281,47 @@ def issue():
 @format_options
 @click.pass_obj
 @handle_api_errors
-def issue_get(ctx, issue_key: str, raw: bool, include_custom_fields: bool, comments: bool, output_format: str):
-    """Get details of a specific issue."""
-    issue = ctx.client.get_issue(issue_key)
+def issue_get(ctx, issue_keys: tuple[str, ...], raw: bool, include_custom_fields: bool, comments: bool, output_format: str):
+    """Get details of one or more issues.
     
-    # Fetch comments if requested
-    issue_comments = None
-    if comments:
-        issue_comments = ctx.client.get_issue_comments(issue_key)
+    You can provide multiple issue keys to fetch them all at once.
+    """
+    results = []
     
-    # Fetch children (issues with this as parent)
-    children_result = ctx.client.search_issues(f"parent = {issue_key}", max_results=100)
-    children_issues = children_result.get("issues", [])
+    for issue_key in issue_keys:
+        issue = ctx.client.get_issue(issue_key)
+        
+        # Fetch comments if requested
+        issue_comments = None
+        if comments:
+            issue_comments = ctx.client.get_issue_comments(issue_key)
+        
+        # Fetch children (issues with this as parent)
+        children_result = ctx.client.search_issues(f"parent = {issue_key}", max_results=100)
+        children_issues = children_result.get("issues", [])
+        
+        if raw:
+            if not include_custom_fields:
+                issue = filter_custom_fields(issue)
+            if issue_comments is not None:
+                issue["comments"] = issue_comments
+            if children_issues:
+                issue["children"] = children_issues
+            results.append(issue)
+        else:
+            simplified = simplify_issue(issue, comments=issue_comments, children=children_issues)
+            results.append(simplified)
     
-    if raw:
-        if not include_custom_fields:
-            issue = filter_custom_fields(issue)
-        if issue_comments is not None:
-            issue["comments"] = issue_comments
-        if children_issues:
-            issue["children"] = children_issues
-        output_data(issue, output_format)
+    # Output results
+    if len(results) == 1:
+        output_data(results[0], output_format)
     else:
-        simplified = simplify_issue(issue, comments=issue_comments, children=children_issues)
-        output_data(simplified, output_format)
+        # For multiple issues, output as list for JSON/YAML, or one-by-one for text
+        if output_format == "text":
+            for result in results:
+                output_data(result, output_format)
+        else:
+            output_data(results, output_format)
 
 
 @issue.command("search")
