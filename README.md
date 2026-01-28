@@ -6,6 +6,8 @@ A command-line interface for interacting with JIRA Cloud API.
 
 - Fetch issue details with simplified, human-readable output
 - Search issues using JQL or convenient filter options
+- Create and edit issues with custom field support
+- Discover fields and allowed values for any project/issue type
 - Multiple output formats: text (Rich tables/panels), JSON, YAML, CSV
 - Color-coded status, priority, and issue types
 - Automatic fetching of child issues for epics
@@ -189,6 +191,119 @@ jira-tool issue children PROJ-100
 # Output as list of keys (for scripting)
 jira-tool issue children PROJ-100 --list
 ```
+
+### Create Issues
+
+Create new JIRA issues:
+
+```bash
+# Create a simple task
+jira-tool issue create -p PROJ -s "Fix login bug"
+
+# Create a bug with description
+jira-tool issue create -p PROJ -s "Login fails" --type Bug -d "Users cannot log in"
+
+# Create issue with labels and components
+jira-tool issue create -p PROJ -s "New feature" --label backend --label api --component Backend
+
+# Create a sub-task under a parent
+jira-tool issue create -p PROJ -s "Sub-task" --type Sub-task --parent PROJ-123
+
+# Create a story under an epic
+jira-tool issue create -p PROJ -s "User story" --type Story --parent PROJ-100
+
+# Use custom fields by name (auto-translated to field IDs)
+jira-tool issue create -p PROJ -s "Critical bug" --type Bug \
+  --field "Severity=Critical" --field "Steps to Reproduce=1. Do X\n2. Do Y"
+
+# Dry-run to see what would be created
+jira-tool issue create -p PROJ -s "Test issue" --dry-run
+```
+
+#### Create Options
+
+| Option | Description |
+|--------|-------------|
+| `--project`, `-p` | Project key (required) |
+| `--summary`, `-s` | Issue summary/title (required) |
+| `--type` | Issue type (default: Task) |
+| `--description`, `-d` | Issue description |
+| `--assignee`, `-a` | Assignee account ID or email |
+| `--priority` | Priority name (e.g., 'P1: High') |
+| `--label` | Label (can specify multiple) |
+| `--component` | Component name (can specify multiple) |
+| `--parent` | Parent issue key (for sub-tasks or epic children) |
+| `--field` | Custom field in 'name=value' format (can specify multiple) |
+| `--dry-run` | Show what would be created without creating |
+
+### Edit Issues
+
+Update existing JIRA issues:
+
+```bash
+# Update summary
+jira-tool issue edit PROJ-123 -s "New title"
+
+# Update description
+jira-tool issue edit PROJ-123 -d "Updated description"
+
+# Change assignee
+jira-tool issue edit PROJ-123 -a user@example.com
+
+# Unassign issue
+jira-tool issue edit PROJ-123 -a ""
+
+# Update custom fields by name
+jira-tool issue edit PROJ-123 --field "Severity=Critical"
+
+# Multiple changes at once
+jira-tool issue edit PROJ-123 -s "New title" --priority "P1: High" --label urgent
+
+# Dry-run to see what would be changed
+jira-tool issue edit PROJ-123 -s "New title" --dry-run
+```
+
+#### Edit Options
+
+| Option | Description |
+|--------|-------------|
+| `--summary`, `-s` | New issue summary/title |
+| `--description`, `-d` | New issue description |
+| `--assignee`, `-a` | New assignee (use '' to unassign) |
+| `--priority` | New priority name |
+| `--label` | Set labels (replaces existing, can specify multiple) |
+| `--component` | Set components (replaces existing, can specify multiple) |
+| `--field` | Custom field in 'name=value' format (can specify multiple) |
+| `--dry-run` | Show what would be changed without updating |
+
+### Field Discovery
+
+Discover available fields and their allowed values:
+
+```bash
+# List all fields (searchable by keyword)
+jira-tool field list
+
+# Search for specific fields
+jira-tool field list --search severity
+jira-tool field list --search "steps to reproduce"
+
+# Show only custom fields
+jira-tool field list --custom-only
+
+# Get allowed values for a field (requires project and issue type)
+jira-tool field options --project PROJ --type Bug --field Severity
+jira-tool field options -p PROJ -t Bug -f "Steps to Reproduce"
+
+# Output as JSON for scripting
+jira-tool field list --search priority --json
+jira-tool field options -p PROJ -t Bug -f Severity --json
+```
+
+Field discovery is useful when:
+- You need to find the exact name of a custom field
+- You want to see what values are allowed for a field
+- You're setting up `--field` options for `issue create` or `issue edit`
 
 ### Output Formats
 
