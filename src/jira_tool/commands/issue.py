@@ -145,7 +145,6 @@ def build_jql_query(
     updated_after: str | None = None,
     updated_before: str | None = None,
     text: str | None = None,
-    unresolved: bool = False,
     exclude_closed: bool = True,
     order_by: str | None = None,
 ) -> str:
@@ -240,10 +239,6 @@ def build_jql_query(
     # Text search
     if text:
         clauses.append(f'text ~ "{text}"')
-    
-    # Unresolved only
-    if unresolved:
-        clauses.append("resolution IS EMPTY")
     
     # Build final query
     if not clauses:
@@ -341,7 +336,6 @@ def issue_get(ctx, issue_keys: tuple[str, ...], raw: bool, include_custom_fields
 @click.option("--updated-after", default=None, help="Updated after date (YYYY-MM-DD or -7d for relative)")
 @click.option("--updated-before", default=None, help="Updated before date (YYYY-MM-DD)")
 @click.option("--text", "-q", "search_text", default=None, help="Full-text search across summary, description, comments")
-@click.option("--unresolved", "-u", is_flag=True, default=False, help="Only show unresolved issues")
 @click.option("--allow-closed", is_flag=True, default=False, help="Include Done/Discarded issues (excluded by default)")
 @click.option("--order-by", default="updated DESC", help="Sort order (default: 'updated DESC')")
 @click.option("--limit", default=50, help="Maximum results to return")
@@ -367,7 +361,6 @@ def issue_search(
     updated_after: str | None,
     updated_before: str | None,
     search_text: str | None,
-    unresolved: bool,
     allow_closed: bool,
     order_by: str | None,
     limit: int,
@@ -379,19 +372,19 @@ def issue_search(
     \b
     Examples:
       # Find my open issues in a project
-      jira-tool issue search -p AIGENPI -a me -u
+      jira-tool issue search -p PROJ -a me
       
       # Find issues by component
-      jira-tool issue search --component rocWMMA --component hipBLASLt
+      jira-tool issue search -p PROJ --component Backend
       
       # Find recently updated bugs
       jira-tool issue search --type Bug --updated-after -7d
       
       # Text search
-      jira-tool issue search --text "memory leak" -p AIGENPI
+      jira-tool issue search --text "memory leak" -p PROJ
       
       # Raw JQL (overrides all other filters)
-      jira-tool issue search --jql "project = AIGENPI AND status = Open"
+      jira-tool issue search --jql "project = PROJ AND status = Open"
     """
     # Build JQL from filters if not provided directly
     if jql is None:
@@ -399,7 +392,7 @@ def issue_search(
         has_filters = any([
             project, component, assignee, reporter, status, issue_type,
             priority, labels, fix_version, parent, created_after, created_before,
-            updated_after, updated_before, search_text, unresolved
+            updated_after, updated_before, search_text
         ])
         if not has_filters:
             raise click.UsageError(
@@ -423,7 +416,6 @@ def issue_search(
             updated_after=updated_after,
             updated_before=updated_before,
             text=search_text,
-            unresolved=unresolved,
             exclude_closed=not allow_closed,
             order_by=order_by,
         )
