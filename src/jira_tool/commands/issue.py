@@ -12,7 +12,15 @@ from jira_tool.formatting import (
     format_issues_csv,
     output_data,
 )
-from jira_tool.utils import filter_custom_fields, simplify_issue
+from jira_tool.utils import (
+    filter_custom_fields,
+    simplify_issue,
+    filter_fields,
+    parse_fields_option,
+    AVAILABLE_FIELDS,
+    DEFAULT_FIELDS_GET,
+    DEFAULT_FIELDS_SEARCH,
+)
 
 
 class FormatOption(click.Option):
@@ -273,27 +281,45 @@ def issue():
     "--comments", is_flag=True, default=False,
     help="Include comments in the output"
 )
+@click.option(
+    "--fields", "-f", default=None,
+    help="Comma-separated list of fields to include. Use +field to add, -field to remove from defaults. Use 'all' for all fields."
+)
 @format_options
 @click.pass_obj
 @handle_api_errors
-def issue_get(ctx, issue_keys: tuple[str, ...], raw: bool, include_custom_fields: bool, comments: bool, output_format: str):
+def issue_get(ctx, issue_keys: tuple[str, ...], raw: bool, include_custom_fields: bool, comments: bool, fields: str | None, output_format: str):
     """Get details of one or more issues.
     
     You can provide multiple issue keys to fetch them all at once.
+    
+    \b
+    Field selection examples:
+      --fields key,summary,status      # Only these fields
+      --fields +labels,+description    # Add to defaults
+      --fields -components,-created    # Remove from defaults
+      --fields all                     # All available fields
     """
     results = []
+    selected_fields = parse_fields_option(fields, DEFAULT_FIELDS_GET)
+    
+    # If comments requested, ensure comments field is included
+    if comments:
+        selected_fields.add("comments")
     
     for issue_key in issue_keys:
         issue = ctx.client.get_issue(issue_key)
         
-        # Fetch comments if requested
+        # Fetch comments if requested or if comments field is selected
         issue_comments = None
-        if comments:
+        if comments or "comments" in selected_fields:
             issue_comments = ctx.client.get_issue_comments(issue_key)
         
-        # Fetch children (issues with this as parent)
-        children_result = ctx.client.search_issues(f"parent = {issue_key}", max_results=100)
-        children_issues = children_result.get("issues", [])
+        # Fetch children (issues with this as parent) if children field is selected
+        children_issues = []
+        if "children" in selected_fields:
+            children_result = ctx.client.search_issues(f"parent = {issue_key}", max_results=100)
+            children_issues = children_result.get("issues", [])
         
         if raw:
             if not include_custom_fields:
@@ -305,7 +331,9 @@ def issue_get(ctx, issue_keys: tuple[str, ...], raw: bool, include_custom_fields
             results.append(issue)
         else:
             simplified = simplify_issue(issue, comments=issue_comments, children=children_issues)
-            results.append(simplified)
+            # Apply field filtering
+            filtered = filter_fields(simplified, selected_fields)
+            results.append(filtered)
     
     # Output results
     if len(results) == 1:
@@ -340,6 +368,10 @@ def issue_get(ctx, issue_keys: tuple[str, ...], raw: bool, include_custom_fields
 @click.option("--order-by", default="updated DESC", help="Sort order (default: 'updated DESC')")
 @click.option("--limit", default=50, help="Maximum results to return")
 @click.option("--show-jql", is_flag=True, default=False, help="Print the generated JQL query")
+@click.option(
+    "--fields", "-f", default=None,
+    help="Comma-separated list of fields to include. Use +field to add, -field to remove from defaults. Use 'all' for all fields."
+)
 @format_options
 @click.pass_obj
 @handle_api_errors
@@ -365,6 +397,7 @@ def issue_search(
     order_by: str | None,
     limit: int,
     show_jql: bool,
+    fields: str | None,
     output_format: str,
 ):
     """Search for issues using filters or JQL.
@@ -426,45 +459,51 @@ def issue_search(
     
     result = ctx.client.search_issues(jql, max_results=limit)
     issues = result.get("issues", [])
+    selected_fields = parse_fields_option(fields, DEFAULT_FIELDS_SEARCH)
     
     if output_format == "text":
         if not issues:
             click.echo("No issues found.")
         else:
-            format_issues_compact(issues)
+            format_issues_compact(issues, selected_fields)
     elif output_format == "list":
         for issue in issues:
             click.echo(issue.get("key", ""))
     elif output_format == "csv":
-        simplified = [simplify_issue(issue) for issue in issues]
+        simplified = [filter_fields(simplify_issue(issue), selected_fields) for issue in issues]
         click.echo(format_issues_csv(simplified), nl=False)
     else:
-        simplified = [simplify_issue(issue) for issue in issues]
+        simplified = [filter_fields(simplify_issue(issue), selected_fields) for issue in issues]
         output_data(simplified, output_format)
 
 
 @issue.command("children")
 @click.argument("issue_key")
 @click.option("--limit", default=50, help="Maximum results to return")
+@click.option(
+    "--fields", "-f", default=None,
+    help="Comma-separated list of fields to include. Use +field to add, -field to remove from defaults. Use 'all' for all fields."
+)
 @format_options
 @click.pass_obj
 @handle_api_errors
-def issue_children(ctx, issue_key: str, limit: int, output_format: str):
+def issue_children(ctx, issue_key: str, limit: int, fields: str | None, output_format: str):
     """Get child issues of an epic or parent issue."""
     result = ctx.client.search_issues(f"parent = {issue_key}", max_results=limit)
     issues = result.get("issues", [])
+    selected_fields = parse_fields_option(fields, DEFAULT_FIELDS_SEARCH)
     
     if output_format == "text":
         if not issues:
             click.echo(f"No child issues found for {issue_key}")
         else:
-            format_issues_compact(issues)
+            format_issues_compact(issues, selected_fields)
     elif output_format == "list":
         for issue in issues:
             click.echo(issue.get("key", ""))
     elif output_format == "csv":
-        simplified = [simplify_issue(issue) for issue in issues]
+        simplified = [filter_fields(simplify_issue(issue), selected_fields) for issue in issues]
         click.echo(format_issues_csv(simplified), nl=False)
     else:
-        simplified = [simplify_issue(issue) for issue in issues]
+        simplified = [filter_fields(simplify_issue(issue), selected_fields) for issue in issues]
         output_data(simplified, output_format)

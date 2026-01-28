@@ -100,6 +100,29 @@ jira-tool issue get PROJ-123 --yaml
 jira-tool issue get PROJ-123 --raw --include-custom-fields
 ```
 
+### Field Selection
+
+Control which fields are included in the output with `--fields`:
+
+```bash
+# Only specific fields
+jira-tool issue get PROJ-123 --fields key,summary,status --yaml
+
+# Add fields to defaults (use + prefix)
+jira-tool issue get PROJ-123 --fields +labels,+time_tracking --yaml
+
+# Remove fields from defaults (use - prefix)
+jira-tool issue get PROJ-123 --fields -components,-created --yaml
+
+# All available fields
+jira-tool issue get PROJ-123 --fields all --yaml
+
+# Works with search too
+jira-tool issue search -p PROJ -a me --fields key,summary,status,labels --yaml
+```
+
+**Available fields:** `key`, `id`, `summary`, `description`, `status`, `type`, `priority`, `resolution`, `assignee`, `reporter`, `created`, `updated`, `due_date`, `labels`, `components`, `fix_versions`, `project`, `parent`, `time_tracking`, `subtasks`, `links`, `children`, `comments`
+
 ### Search Issues
 
 Search using convenient filter options:

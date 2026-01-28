@@ -79,78 +79,178 @@ def format_issues_csv(issues: list[dict]) -> str:
     return output.getvalue()
 
 
-def format_issues_compact(issues: list[dict]) -> None:
-    """Format issues as a rich table."""
+# Color mappings for table output
+STATUS_COLORS = {
+    "Done": "green",
+    "Closed": "green",
+    "Resolved": "green",
+    "Discarded": "dim",
+    "In Progress": "yellow",
+    "Implementation": "yellow",
+    "Review": "cyan",
+    "In Review": "cyan",
+    "Open": "white",
+}
+
+PRIORITY_COLORS = {
+    "P1": "red bold",
+    "P2": "yellow",
+    "P3": "dim",
+}
+
+TYPE_COLORS = {
+    "Bug": "red",
+    "Epic": "magenta bold",
+    "Story": "green",
+    "Task": "blue",
+    "Sub-task": "dim blue",
+}
+
+# Default columns for table display (in order)
+DEFAULT_TABLE_COLUMNS = ["key", "status", "type", "priority", "assignee", "components", "summary"]
+
+# Column definitions: field_name -> (header, style, no_wrap, ratio, max_width)
+TABLE_COLUMN_DEFS = {
+    "key": ("Key", "bold cyan", True, None, None),
+    "status": ("Status", None, True, None, None),
+    "type": ("Type", None, True, None, None),
+    "priority": ("Priority", None, True, None, None),
+    "assignee": ("Assignee", None, True, None, 18),
+    "reporter": ("Reporter", None, True, None, 18),
+    "components": ("Components", None, True, 1, 30),
+    "labels": ("Labels", None, True, 1, 30),
+    "fix_versions": ("Fix Versions", None, True, 1, 20),
+    "summary": ("Summary", None, False, 3, 60),
+    "description": ("Description", None, False, 2, 50),
+    "created": ("Created", None, True, None, None),
+    "updated": ("Updated", None, True, None, None),
+    "due_date": ("Due", None, True, None, None),
+    "project": ("Project", None, True, None, None),
+    "parent": ("Parent", "cyan", True, None, None),
+    "resolution": ("Resolution", None, True, None, None),
+    "id": ("ID", "dim", True, None, None),
+}
+
+
+def _extract_field_value(issue: dict, field_name: str) -> str:
+    """Extract a field value from a raw API issue for table display."""
+    fields = issue.get("fields", {})
+    
+    if field_name == "key":
+        return issue.get("key", "?")
+    elif field_name == "id":
+        return issue.get("id", "?")
+    elif field_name == "status":
+        return fields.get("status", {}).get("name", "?")
+    elif field_name == "type":
+        return fields.get("issuetype", {}).get("name", "?")
+    elif field_name == "priority":
+        priority_raw = fields.get("priority", {}).get("name") if fields.get("priority") else None
+        return normalize_priority(priority_raw) or "-"
+    elif field_name == "assignee":
+        return fields.get("assignee", {}).get("displayName", "-") if fields.get("assignee") else "-"
+    elif field_name == "reporter":
+        return fields.get("reporter", {}).get("displayName", "-") if fields.get("reporter") else "-"
+    elif field_name == "summary":
+        return (fields.get("summary") or "").strip()
+    elif field_name == "components":
+        components = [c.get("name", "") for c in fields.get("components", [])]
+        return ", ".join(components) if components else "-"
+    elif field_name == "labels":
+        labels = fields.get("labels", [])
+        return ", ".join(labels) if labels else "-"
+    elif field_name == "fix_versions":
+        versions = [v.get("name", "") for v in fields.get("fixVersions", [])]
+        return ", ".join(versions) if versions else "-"
+    elif field_name == "created":
+        val = fields.get("created", "")
+        return val[:10] if val else "-"
+    elif field_name == "updated":
+        val = fields.get("updated", "")
+        return val[:10] if val else "-"
+    elif field_name == "due_date":
+        return fields.get("duedate") or "-"
+    elif field_name == "project":
+        return fields.get("project", {}).get("key", "?")
+    elif field_name == "parent":
+        parent = fields.get("parent")
+        return parent.get("key") if parent else "-"
+    elif field_name == "resolution":
+        res = fields.get("resolution")
+        return res.get("name") if res else "-"
+    else:
+        return "-"
+
+
+def _style_field_value(field_name: str, value: str) -> Text | str:
+    """Apply color styling to a field value."""
+    if field_name == "status":
+        return Text(value, style=STATUS_COLORS.get(value, "white"))
+    elif field_name == "priority":
+        return Text(value, style=PRIORITY_COLORS.get(value, "white"))
+    elif field_name == "type":
+        return Text(value, style=TYPE_COLORS.get(value, "white"))
+    elif field_name == "summary":
+        # Escape brackets to prevent Rich markup interpretation
+        return Text(value)
+    else:
+        return value
+
+
+def format_issues_compact(issues: list[dict], selected_fields: set[str] | None = None) -> None:
+    """Format issues as a rich table with dynamic columns.
+    
+    Args:
+        issues: List of raw API issue dicts
+        selected_fields: Set of field names to display, or None for defaults
+    """
     console = Console()
     
-    table = Table(show_header=True, header_style="bold", box=None, padding=(0, 1))
-    table.add_column("Key", style="bold cyan", no_wrap=True)
-    table.add_column("Status", no_wrap=True)
-    table.add_column("Type", no_wrap=True)
-    table.add_column("Priority", no_wrap=True)
-    table.add_column("Assignee", no_wrap=True)
-    table.add_column("Components", no_wrap=True, ratio=1)
-    table.add_column("Summary", ratio=3)
+    # Determine which columns to show (maintain a sensible order)
+    if selected_fields is None:
+        columns = DEFAULT_TABLE_COLUMNS
+    else:
+        # Keep columns in a logical order, only including selected ones
+        all_ordered = ["key", "id", "status", "type", "priority", "resolution", 
+                       "assignee", "reporter", "project", "parent", "components", 
+                       "labels", "fix_versions", "created", "updated", "due_date", 
+                       "summary", "description"]
+        columns = [c for c in all_ordered if c in selected_fields]
+        # Always ensure key is first if present
+        if "key" in columns and columns[0] != "key":
+            columns.remove("key")
+            columns.insert(0, "key")
     
+    # Build table
+    table = Table(show_header=True, header_style="bold", box=None, padding=(0, 1))
+    
+    for col in columns:
+        header, style, no_wrap, ratio, max_width = TABLE_COLUMN_DEFS.get(
+            col, (col.title(), None, True, None, None)
+        )
+        kwargs = {"no_wrap": no_wrap}
+        if style:
+            kwargs["style"] = style
+        if ratio:
+            kwargs["ratio"] = ratio
+        table.add_column(header, **kwargs)
+    
+    # Add rows
     for issue in issues:
-        fields = issue.get("fields", {})
-        key = issue.get("key", "?")
-        summary = (fields.get("summary") or "").strip()
-        status = fields.get("status", {}).get("name", "?")
-        issue_type = fields.get("issuetype", {}).get("name", "?")
-        priority_raw = fields.get("priority", {}).get("name") if fields.get("priority") else None
-        priority = normalize_priority(priority_raw) or "-"
-        assignee = fields.get("assignee", {}).get("displayName", "-") if fields.get("assignee") else "-"
-        components = [c.get("name", "") for c in fields.get("components", [])]
-        components_str = ", ".join(components) if components else "-"
+        row_values = []
+        for col in columns:
+            value = _extract_field_value(issue, col)
+            
+            # Truncate if needed
+            _, _, _, _, max_width = TABLE_COLUMN_DEFS.get(col, (None, None, None, None, None))
+            if max_width and len(value) > max_width:
+                value = value[:max_width - 3] + "..."
+            
+            # Apply styling
+            styled = _style_field_value(col, value)
+            row_values.append(styled)
         
-        # Truncate summary if too long
-        max_summary = 60
-        if len(summary) > max_summary:
-            summary = summary[:max_summary - 3] + "..."
-        
-        # Truncate assignee name
-        if len(assignee) > 18:
-            assignee = assignee[:15] + "..."
-        
-        # Truncate components if too long
-        if len(components_str) > 30:
-            components_str = components_str[:27] + "..."
-        
-        # Color-code status
-        status_colors = {
-            "Done": "green",
-            "Closed": "green",
-            "Resolved": "green",
-            "Discarded": "dim",
-            "In Progress": "yellow",
-            "Implementation": "yellow",
-            "Review": "cyan",
-            "In Review": "cyan",
-            "Open": "white",
-        }
-        status_text = Text(status, style=status_colors.get(status, "white"))
-        
-        # Color-code priority
-        priority_colors = {
-            "P1": "red bold",
-            "P2": "yellow",
-            "P3": "dim",
-        }
-        priority_text = Text(priority, style=priority_colors.get(priority, "white"))
-        
-        # Color-code issue type
-        type_colors = {
-            "Bug": "red",
-            "Epic": "magenta bold",
-            "Story": "green",
-            "Task": "blue",
-            "Sub-task": "dim blue",
-        }
-        type_text = Text(issue_type, style=type_colors.get(issue_type, "white"))
-        
-        # Use Text() for summary to prevent Rich from interpreting [brackets] as markup
-        table.add_row(key, status_text, type_text, priority_text, assignee, components_str, Text(summary))
+        table.add_row(*row_values)
     
     console.print(table)
 

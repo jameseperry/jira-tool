@@ -159,3 +159,99 @@ def simplify_issue(issue: dict, comments: list[dict] | None = None, children: li
         ]
     
     return simplified
+
+
+# All available fields that can be selected
+AVAILABLE_FIELDS = {
+    "key", "id", "summary", "description", "status", "type", "priority",
+    "resolution", "assignee", "reporter", "created", "updated", "due_date",
+    "labels", "components", "fix_versions", "project", "parent",
+    "time_tracking", "subtasks", "links", "children", "comments",
+}
+
+# Default fields for different contexts
+DEFAULT_FIELDS_GET = {
+    "key", "summary", "description", "status", "type", "priority",
+    "assignee", "reporter", "created", "updated", "due_date",
+    "labels", "components", "fix_versions", "project", "parent",
+    "subtasks", "links", "children", "comments",
+}
+
+DEFAULT_FIELDS_SEARCH = {
+    "key", "summary", "status", "type", "priority", "assignee", "components",
+}
+
+
+def filter_fields(issue: dict, fields: set[str]) -> dict:
+    """Filter a simplified issue to only include the specified fields.
+    
+    Args:
+        issue: A simplified issue dict from simplify_issue()
+        fields: Set of field names to include
+        
+    Returns:
+        Dict containing only the requested fields (that have values)
+    """
+    result = {}
+    for field in fields:
+        if field in issue:
+            value = issue[field]
+            # Skip empty/None values to keep output clean
+            if value is not None and value != [] and value != {}:
+                result[field] = value
+    return result
+
+
+def parse_fields_option(fields_str: str | None, default_fields: set[str]) -> set[str]:
+    """Parse a comma-separated fields string into a set of field names.
+    
+    Supports:
+    - Comma-separated field names: "key,summary,status"
+    - Adding to defaults with +: "+labels,description" 
+    - Removing from defaults with -: "-components,-created"
+    - Mix of add/remove: "+labels,-components"
+    - "all" to include all available fields
+    
+    Args:
+        fields_str: The --fields option value, or None for defaults
+        default_fields: The default set of fields for this context
+        
+    Returns:
+        Set of field names to include
+    """
+    if not fields_str:
+        return default_fields
+    
+    fields_str = fields_str.strip()
+    
+    # Special case: "all" returns all fields
+    if fields_str.lower() == "all":
+        return AVAILABLE_FIELDS.copy()
+    
+    # Check if using +/- modifiers
+    parts = [p.strip() for p in fields_str.split(",")]
+    has_modifiers = any(p.startswith("+") or p.startswith("-") for p in parts)
+    
+    if has_modifiers:
+        # Start with defaults, then apply modifiers
+        result = default_fields.copy()
+        for part in parts:
+            if part.startswith("+"):
+                field = part[1:]
+                if field in AVAILABLE_FIELDS:
+                    result.add(field)
+            elif part.startswith("-"):
+                field = part[1:]
+                result.discard(field)
+            else:
+                # No modifier, treat as add
+                if part in AVAILABLE_FIELDS:
+                    result.add(part)
+        return result
+    else:
+        # Explicit list of fields (always include key)
+        result = {"key"}
+        for part in parts:
+            if part in AVAILABLE_FIELDS:
+                result.add(part)
+        return result
