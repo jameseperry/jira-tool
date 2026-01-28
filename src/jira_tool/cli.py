@@ -4,6 +4,7 @@ import click
 
 from jira_tool.client import JiraClient
 from jira_tool.commands.issue import issue
+from jira_tool.commands.field import field
 
 
 class Context:
@@ -57,3 +58,4 @@ def cli(ctx, debug: bool, base_url: str, email: str, token: str):
 
 # Register command groups
 cli.add_command(issue)
+cli.add_command(field)

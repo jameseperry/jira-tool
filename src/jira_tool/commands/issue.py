@@ -88,7 +88,17 @@ def handle_api_errors(func):
         try:
             return func(ctx, *args, **kwargs)
         except JiraError as e:
-            click.echo(click.style(e.format_error(), fg="red"), err=True)
+            # For 400 errors with field errors, try to get field name mappings
+            field_name_map = None
+            if e.status_code == 400 and e.response and "errors" in e.response:
+                try:
+                    # Fetch field definitions to translate IDs to names
+                    fields = ctx.client.get_fields()
+                    field_name_map = {f.get("id", ""): f.get("name", "") for f in fields}
+                except Exception:
+                    pass  # Silently fail - we'll just show the field IDs
+            
+            click.echo(click.style(e.format_error(field_name_map), fg="red"), err=True)
             
             # Show additional debug info if --debug flag is set
             if ctx.debug:
@@ -507,3 +517,303 @@ def issue_children(ctx, issue_key: str, limit: int, fields: str | None, output_f
     else:
         simplified = [filter_fields(simplify_issue(issue), selected_fields) for issue in issues]
         output_data(simplified, output_format)
+
+
+@issue.command("create")
+@click.option("--project", "-p", required=True, help="Project key (e.g., PROJ)")
+@click.option("--summary", "-s", required=True, help="Issue summary/title")
+@click.option("--type", "issue_type", default="Task", help="Issue type (default: Task)")
+@click.option("--description", "-d", default=None, help="Issue description")
+@click.option("--assignee", "-a", default=None, help="Assignee account ID or email")
+@click.option("--priority", default=None, help="Priority name (e.g., 'P1: High')")
+@click.option("--label", "labels", multiple=True, help="Label (can specify multiple)")
+@click.option("--component", "components", multiple=True, help="Component name (can specify multiple)")
+@click.option("--parent", default=None, help="Parent issue key (for sub-tasks or epic children)")
+@click.option("--field", "extra_fields", multiple=True, help="Additional field in 'name=value' format. Field names are auto-translated to IDs.")
+@click.option("--dry-run", is_flag=True, default=False, help="Show what would be created without actually creating it")
+@format_options
+@click.pass_obj
+@handle_api_errors
+def issue_create(
+    ctx,
+    project: str,
+    summary: str,
+    issue_type: str,
+    description: str | None,
+    assignee: str | None,
+    priority: str | None,
+    labels: tuple[str, ...],
+    components: tuple[str, ...],
+    parent: str | None,
+    extra_fields: tuple[str, ...],
+    dry_run: bool,
+    output_format: str,
+):
+    """Create a new JIRA issue.
+    
+    \b
+    Examples:
+      # Create a simple task
+      jira-tool issue create -p PROJ -s "Fix login bug"
+      
+      # Create a bug with description
+      jira-tool issue create -p PROJ -s "Login fails" --type Bug -d "Users cannot log in"
+      
+      # Create issue with labels and components
+      jira-tool issue create -p PROJ -s "New feature" --label backend --label api --component Backend
+      
+      # Create a sub-task under a parent
+      jira-tool issue create -p PROJ -s "Sub-task" --type Sub-task --parent PROJ-123
+      
+      # Use custom fields by name (auto-translated to field IDs)
+      jira-tool issue create -p PROJ -s "Bug" --type Bug \\
+        --field "Severity=High" --field "Steps to Reproduce=1. Do X\\n2. Do Y"
+      
+      # Dry-run to see what would be created
+      jira-tool issue create -p PROJ -s "Test" --dry-run
+    """
+    # Parse extra fields from "name=value" format
+    parsed_extra_fields = {}
+    for field_spec in extra_fields:
+        if "=" not in field_spec:
+            raise click.UsageError(f"Invalid field format: '{field_spec}'. Use 'name=value' format.")
+        name, value = field_spec.split("=", 1)
+        name = name.strip()
+        value = value.strip()
+        
+        # Try to parse as JSON for complex values, otherwise use as string
+        try:
+            parsed_value = json.loads(value)
+        except json.JSONDecodeError:
+            # Handle escaped newlines in string values
+            parsed_value = value.replace("\\n", "\n")
+        
+        parsed_extra_fields[name] = parsed_value
+    
+    # Translate field names to IDs if we have extra fields
+    translated_extra_fields = None
+    if parsed_extra_fields:
+        translated_extra_fields = ctx.client.translate_field_names(parsed_extra_fields)
+    # Build the payload preview
+    payload = {
+        "project": project,
+        "summary": summary,
+        "type": issue_type,
+    }
+    
+    if description:
+        payload["description"] = description
+    if assignee:
+        payload["assignee"] = assignee
+    if priority:
+        payload["priority"] = priority
+    if labels:
+        payload["labels"] = list(labels)
+    if components:
+        payload["components"] = list(components)
+    if parent:
+        payload["parent"] = parent
+    if parsed_extra_fields:
+        payload["extra_fields"] = parsed_extra_fields
+        payload["extra_fields_translated"] = translated_extra_fields
+    
+    if dry_run:
+        # Show what would be created
+        click.echo(click.style("DRY RUN - No issue will be created", fg="yellow", bold=True), err=True)
+        click.echo(click.style("─" * 50, fg="yellow"), err=True)
+        click.echo("", err=True)
+        
+        click.echo(click.style("API Payload:", fg="cyan", bold=True), err=True)
+        output_data(payload, output_format if output_format != "text" else "yaml")
+        click.echo("", err=True)
+        
+        # Fake result for consistent output
+        result = {
+            "id": "00000",
+            "key": f"{project}-XXXXX",
+            "self": f"{ctx.client.base_url}/issue/00000",
+        }
+    else:
+        # Actually create the issue
+        result = ctx.client.create_issue(
+            project_key=project,
+            summary=summary,
+            issue_type=issue_type,
+            description=description,
+            assignee=assignee,
+            priority=priority,
+            labels=list(labels) if labels else None,
+            components=list(components) if components else None,
+            parent=parent,
+            extra_fields=translated_extra_fields,
+        )
+    
+    # Extract key info from result
+    issue_key = result.get("key", "")
+    issue_id = result.get("id", "")
+    issue_self = result.get("self", "")
+    
+    if output_format == "text":
+        prefix = "[DRY RUN] " if dry_run else ""
+        click.echo(click.style(f"✓ {prefix}Created issue: {issue_key}", fg="green", bold=True))
+        
+        # Build issue URL
+        if ctx.client.base_url:
+            browse_url = f"{ctx.client.base_url.replace('/rest/api/3', '')}/browse/{issue_key}"
+            click.echo(f"  URL: {browse_url}")
+    else:
+        # Return simplified response for JSON/YAML
+        output = {
+            "key": issue_key,
+            "id": issue_id,
+            "self": issue_self,
+            "created": True,
+        }
+        output_data(output, output_format)
+
+
+@issue.command("edit")
+@click.argument("issue_key")
+@click.option("--summary", "-s", default=None, help="New issue summary/title")
+@click.option("--description", "-d", default=None, help="New issue description")
+@click.option("--assignee", "-a", default=None, help="New assignee (use '' to unassign)")
+@click.option("--priority", default=None, help="New priority name")
+@click.option("--label", "labels", multiple=True, help="Set labels (replaces existing, can specify multiple)")
+@click.option("--component", "components", multiple=True, help="Set components (replaces existing, can specify multiple)")
+@click.option("--field", "extra_fields", multiple=True, help="Additional field in 'name=value' format. Field names are auto-translated to IDs.")
+@click.option("--dry-run", is_flag=True, default=False, help="Show what would be changed without actually updating")
+@format_options
+@click.pass_obj
+@handle_api_errors
+def issue_edit(
+    ctx,
+    issue_key: str,
+    summary: str | None,
+    description: str | None,
+    assignee: str | None,
+    priority: str | None,
+    labels: tuple[str, ...],
+    components: tuple[str, ...],
+    extra_fields: tuple[str, ...],
+    dry_run: bool,
+    output_format: str,
+):
+    """Edit an existing JIRA issue.
+    
+    \b
+    Examples:
+      # Update summary
+      jira-tool issue edit PROJ-123 -s "New title"
+      
+      # Update description
+      jira-tool issue edit PROJ-123 -d "New description"
+      
+      # Change assignee
+      jira-tool issue edit PROJ-123 -a user@example.com
+      
+      # Unassign issue
+      jira-tool issue edit PROJ-123 -a ""
+      
+      # Update custom fields by name
+      jira-tool issue edit PROJ-123 --field "Severity=Critical"
+      
+      # Multiple changes at once
+      jira-tool issue edit PROJ-123 -s "New title" --priority "P1: High" --label urgent
+      
+      # Dry-run to see what would be changed
+      jira-tool issue edit PROJ-123 -s "New title" --dry-run
+    """
+    # Check that at least one field is being changed
+    has_changes = any([
+        summary is not None,
+        description is not None,
+        assignee is not None,
+        priority is not None,
+        labels,
+        components,
+        extra_fields,
+    ])
+    
+    if not has_changes:
+        raise click.UsageError("No fields specified to update. Use --help to see available options.")
+    
+    # Parse extra fields from "name=value" format
+    parsed_extra_fields = {}
+    for field_spec in extra_fields:
+        if "=" not in field_spec:
+            raise click.UsageError(f"Invalid field format: '{field_spec}'. Use 'name=value' format.")
+        name, value = field_spec.split("=", 1)
+        name = name.strip()
+        value = value.strip()
+        
+        # Try to parse as JSON for complex values, otherwise use as string
+        try:
+            parsed_value = json.loads(value)
+        except json.JSONDecodeError:
+            # Handle escaped newlines in string values
+            parsed_value = value.replace("\\n", "\n")
+        
+        parsed_extra_fields[name] = parsed_value
+    
+    # Translate field names to IDs if we have extra fields
+    translated_extra_fields = None
+    if parsed_extra_fields:
+        translated_extra_fields = ctx.client.translate_field_names(parsed_extra_fields)
+    
+    # Build the payload preview
+    payload = {"issue": issue_key}
+    
+    if summary is not None:
+        payload["summary"] = summary
+    if description is not None:
+        payload["description"] = description
+    if assignee is not None:
+        payload["assignee"] = assignee if assignee else "(unassign)"
+    if priority is not None:
+        payload["priority"] = priority
+    if labels:
+        payload["labels"] = list(labels)
+    if components:
+        payload["components"] = list(components)
+    if parsed_extra_fields:
+        payload["extra_fields"] = parsed_extra_fields
+        payload["extra_fields_translated"] = translated_extra_fields
+    
+    if dry_run:
+        # Show what would be changed
+        click.echo(click.style("DRY RUN - No changes will be made", fg="yellow", bold=True), err=True)
+        click.echo(click.style("─" * 50, fg="yellow"), err=True)
+        click.echo("", err=True)
+        
+        click.echo(click.style("Changes to apply:", fg="cyan", bold=True), err=True)
+        output_data(payload, output_format if output_format != "text" else "yaml")
+        click.echo("", err=True)
+        
+        click.echo(click.style(f"✓ [DRY RUN] Would update issue: {issue_key}", fg="green", bold=True))
+        if ctx.client.base_url:
+            browse_url = f"{ctx.client.base_url.replace('/rest/api/3', '')}/browse/{issue_key}"
+            click.echo(f"  URL: {browse_url}")
+    else:
+        # Actually update the issue
+        ctx.client.update_issue(
+            issue_key=issue_key,
+            summary=summary,
+            description=description,
+            assignee=assignee,
+            priority=priority,
+            labels=list(labels) if labels else None,
+            components=list(components) if components else None,
+            extra_fields=translated_extra_fields,
+        )
+        
+        if output_format == "text":
+            click.echo(click.style(f"✓ Updated issue: {issue_key}", fg="green", bold=True))
+            if ctx.client.base_url:
+                browse_url = f"{ctx.client.base_url.replace('/rest/api/3', '')}/browse/{issue_key}"
+                click.echo(f"  URL: {browse_url}")
+        else:
+            output = {
+                "key": issue_key,
+                "updated": True,
+            }
+            output_data(output, output_format)

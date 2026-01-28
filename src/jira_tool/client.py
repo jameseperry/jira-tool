@@ -47,8 +47,12 @@ class JiraError(Exception):
         self.response_headers = response_headers
         self.timestamp = datetime.now().isoformat()
 
-    def format_error(self) -> str:
-        """Format error for user-friendly display."""
+    def format_error(self, field_name_map: dict[str, str] | None = None) -> str:
+        """Format error for user-friendly display.
+        
+        Args:
+            field_name_map: Optional mapping of field IDs to human-readable names
+        """
         lines = []
         
         # Main error message with description
@@ -63,6 +67,9 @@ class JiraError(Exception):
         
         lines.append("")
         
+        # Track if we have field errors for hint
+        has_field_errors = False
+        
         # Error details from response
         if self.response:
             if "errorMessages" in self.response and self.response["errorMessages"]:
@@ -70,11 +77,27 @@ class JiraError(Exception):
                 for msg in self.response["errorMessages"]:
                     lines.append(f"  • {msg}")
             if "errors" in self.response and self.response["errors"]:
+                has_field_errors = True
                 lines.append("Field Errors:")
                 for field, msg in self.response["errors"].items():
-                    lines.append(f"  • {field}: {msg}")
+                    # Try to get human-readable field name
+                    display_name = field
+                    if field_name_map and field in field_name_map:
+                        display_name = f"{field_name_map[field]} ({field})"
+                    elif field.startswith("customfield_"):
+                        # Mark as custom field even if we don't have the name
+                        display_name = f"{field} (custom field)"
+                    lines.append(f"  • {display_name}: {msg}")
             if "message" in self.response and "errorMessages" not in self.response:
                 lines.append(f"Message: {self.response['message']}")
+        
+        # Add hint for field errors
+        if has_field_errors and self.status_code == 400:
+            lines.append("")
+            lines.append("💡 Hint: Use these commands to discover fields and allowed values:")
+            lines.append("   jira-tool field list -q <search>          # Find field names and IDs")
+            lines.append("   jira-tool field options <PROJECT> <TYPE>  # See required fields & allowed values")
+            lines.append("   --field \"Field Name=value\"                # Pass custom fields by name")
         
         # Request details section
         lines.append("")
@@ -273,6 +296,144 @@ class JiraClient:
             body["nextPageToken"] = next_page_token
         return self.post("search/jql", json=body)
 
+    def create_issue(
+        self,
+        project_key: str,
+        summary: str,
+        issue_type: str,
+        description: str | None = None,
+        assignee: str | None = None,
+        priority: str | None = None,
+        labels: list[str] | None = None,
+        components: list[str] | None = None,
+        parent: str | None = None,
+        extra_fields: dict | None = None,
+    ) -> dict[str, Any]:
+        """Create a new JIRA issue.
+
+        Args:
+            project_key: Project key (e.g., PROJ)
+            summary: Issue summary/title
+            issue_type: Issue type (e.g., Bug, Story, Task, Epic)
+            description: Issue description (plain text, will be converted to ADF)
+            assignee: Assignee account ID or email
+            priority: Priority name (e.g., "P1: High")
+            labels: List of labels
+            components: List of component names
+            parent: Parent issue key (for sub-tasks or epic children)
+            extra_fields: Additional fields as a dict
+
+        Returns:
+            Created issue data dictionary
+        """
+        fields: dict[str, Any] = {
+            "project": {"key": project_key},
+            "summary": summary,
+            "issuetype": {"name": issue_type},
+        }
+
+        if description:
+            # Convert plain text to Atlassian Document Format
+            fields["description"] = {
+                "type": "doc",
+                "version": 1,
+                "content": [
+                    {
+                        "type": "paragraph",
+                        "content": [{"type": "text", "text": line}]
+                    }
+                    for line in description.split("\n")
+                    if line.strip()  # Skip empty lines
+                ] or [{"type": "paragraph", "content": [{"type": "text", "text": " "}]}]
+            }
+
+        if assignee:
+            # Could be account ID or email - JIRA expects accountId
+            fields["assignee"] = {"id": assignee} if assignee.startswith("accountid:") else {"accountId": assignee}
+
+        if priority:
+            fields["priority"] = {"name": priority}
+
+        if labels:
+            fields["labels"] = labels
+
+        if components:
+            fields["components"] = [{"name": c} for c in components]
+
+        if parent:
+            fields["parent"] = {"key": parent}
+
+        if extra_fields:
+            fields.update(extra_fields)
+
+        return self.post("issue", json={"fields": fields})
+
+    def update_issue(
+        self,
+        issue_key: str,
+        summary: str | None = None,
+        description: str | None = None,
+        assignee: str | None = None,
+        priority: str | None = None,
+        labels: list[str] | None = None,
+        components: list[str] | None = None,
+        extra_fields: dict | None = None,
+    ) -> dict[str, Any]:
+        """Update an existing JIRA issue.
+
+        Args:
+            issue_key: Issue key (e.g., PROJ-123)
+            summary: New summary/title
+            description: New description (plain text, will be converted to ADF)
+            assignee: New assignee account ID or email (use "" to unassign)
+            priority: New priority name
+            labels: New labels (replaces existing)
+            components: New components (replaces existing)
+            extra_fields: Additional fields as a dict (already translated)
+
+        Returns:
+            Empty dict on success (204 response)
+        """
+        fields: dict[str, Any] = {}
+
+        if summary is not None:
+            fields["summary"] = summary
+
+        if description is not None:
+            # Convert plain text to Atlassian Document Format
+            fields["description"] = {
+                "type": "doc",
+                "version": 1,
+                "content": [
+                    {
+                        "type": "paragraph",
+                        "content": [{"type": "text", "text": line}]
+                    }
+                    for line in description.split("\n")
+                    if line.strip()
+                ] or [{"type": "paragraph", "content": [{"type": "text", "text": " "}]}]
+            }
+
+        if assignee is not None:
+            if assignee == "":
+                fields["assignee"] = None  # Unassign
+            else:
+                fields["assignee"] = {"id": assignee} if assignee.startswith("accountid:") else {"accountId": assignee}
+
+        if priority is not None:
+            fields["priority"] = {"name": priority}
+
+        if labels is not None:
+            fields["labels"] = labels
+
+        if components is not None:
+            fields["components"] = [{"name": c} for c in components]
+
+        if extra_fields:
+            fields.update(extra_fields)
+
+        return self.put(f"issue/{issue_key}", json={"fields": fields})
+
     # =========================================================================
     # Project methods
     # =========================================================================
@@ -294,3 +455,142 @@ class JiraClient:
             Project data dictionary
         """
         return self.get(f"project/{project_key}")
+
+    # =========================================================================
+    # Field methods
+    # =========================================================================
+    def get_fields(self) -> list[dict[str, Any]]:
+        """Get all available fields in the JIRA instance.
+
+        Returns:
+            List of field dictionaries with id, name, custom, schema, etc.
+        """
+        return self.get("field")
+
+    def get_field_map(self) -> dict[str, dict[str, Any]]:
+        """Get a mapping of field names to field info (ID and schema).
+
+        Returns:
+            Dictionary mapping lowercase field names to field info dicts.
+            Each dict contains 'id' and 'schema' keys.
+        """
+        fields = self.get_fields()
+        field_map = {}
+        
+        for field in fields:
+            field_id = field.get("id", "")
+            field_name = field.get("name", "")
+            field_key = field.get("key", "")
+            schema = field.get("schema", {}) or {}
+            
+            field_info = {
+                "id": field_id,
+                "schema": schema,
+            }
+            
+            # Map by lowercase name
+            if field_name:
+                field_map[field_name.lower()] = field_info
+            
+            # Also map by key if different from name
+            if field_key and field_key.lower() != field_name.lower():
+                field_map[field_key.lower()] = field_info
+            
+            # Also map by ID itself for explicit customfield_XXXXX references
+            if field_id:
+                field_map[field_id.lower()] = field_info
+        
+        return field_map
+
+    def _format_field_value(self, value: Any, schema: dict) -> Any:
+        """Format a field value based on its schema type.
+
+        Args:
+            value: The raw value to format
+            schema: The field schema from JIRA
+
+        Returns:
+            Properly formatted value for the JIRA API
+        """
+        field_type = schema.get("type", "")
+        
+        # Option fields expect {"value": "..."} or {"id": "..."}
+        if field_type == "option":
+            if isinstance(value, dict):
+                return value  # Already formatted
+            return {"value": value}
+        
+        # Array of options
+        if field_type == "array" and schema.get("items") == "option":
+            if isinstance(value, list):
+                return [{"value": v} if not isinstance(v, dict) else v for v in value]
+            return [{"value": value}]
+        
+        # User fields expect {"accountId": "..."} or {"id": "..."}
+        if field_type == "user":
+            if isinstance(value, dict):
+                return value
+            return {"accountId": value}
+        
+        # Array of users
+        if field_type == "array" and schema.get("items") == "user":
+            if isinstance(value, list):
+                return [{"accountId": v} if not isinstance(v, dict) else v for v in value]
+            return [{"accountId": value}]
+        
+        # For string fields that use ADF (like text areas), convert to ADF
+        if field_type == "string" and schema.get("custom", "").endswith(":textarea"):
+            if isinstance(value, str):
+                return {
+                    "type": "doc",
+                    "version": 1,
+                    "content": [
+                        {
+                            "type": "paragraph",
+                            "content": [{"type": "text", "text": line}]
+                        }
+                        for line in value.split("\n")
+                        if line.strip()
+                    ] or [{"type": "paragraph", "content": [{"type": "text", "text": " "}]}]
+                }
+        
+        # Default: return as-is
+        return value
+
+    def translate_field_names(self, fields_dict: dict[str, Any]) -> dict[str, Any]:
+        """Translate human-readable field names to JIRA field IDs and format values.
+
+        Args:
+            fields_dict: Dictionary with field names as keys
+
+        Returns:
+            Dictionary with field IDs as keys, values formatted appropriately
+        """
+        field_map = self.get_field_map()
+        translated = {}
+        
+        for name, value in fields_dict.items():
+            # Look up the field info
+            field_info = field_map.get(name.lower())
+            
+            if field_info is None:
+                # Check if it's already a valid field ID (customfield_XXXXX)
+                if name.startswith("customfield_") or name in ["summary", "description", "project", "issuetype", "assignee", "reporter", "priority", "labels", "components", "parent", "status", "resolution", "fixVersions", "versions", "duedate"]:
+                    # No schema info available, pass through as-is
+                    translated[name] = value
+                    continue
+                else:
+                    raise JiraError(
+                        message=f"Unknown field: '{name}'. Use 'jira-tool field list' to see available fields.",
+                        status_code=None,
+                    )
+            
+            field_id = field_info["id"]
+            schema = field_info.get("schema", {})
+            
+            # Format the value based on schema
+            formatted_value = self._format_field_value(value, schema)
+            translated[field_id] = formatted_value
+        
+        return translated
+
