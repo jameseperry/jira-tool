@@ -318,5 +318,6 @@ from jira_tool.commands.issue.search import issue_search
 from jira_tool.commands.issue.children import issue_children
 from jira_tool.commands.issue.create import issue_create
 from jira_tool.commands.issue.edit import issue_edit
+from jira_tool.commands.issue.delete import issue_delete
 
 # Commands are registered via decorators in their respective modules

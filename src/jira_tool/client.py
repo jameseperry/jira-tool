@@ -434,6 +434,22 @@ class JiraClient:
 
         return self.put(f"issue/{issue_key}", json={"fields": fields})
 
+    def delete_issue(self, issue_key: str, delete_subtasks: bool = False) -> dict[str, Any]:
+        """Delete a JIRA issue.
+
+        Args:
+            issue_key: Issue key (e.g., PROJ-123)
+            delete_subtasks: If True, also delete subtasks. If False and issue has
+                           subtasks, the deletion will fail.
+
+        Returns:
+            Empty dict on success (204 response)
+        """
+        endpoint = f"issue/{issue_key}"
+        if delete_subtasks:
+            endpoint += "?deleteSubtasks=true"
+        return self.delete(endpoint)
+
     # =========================================================================
     # Project methods
     # =========================================================================
