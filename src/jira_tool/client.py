@@ -213,6 +213,10 @@ class JiraClient:
         if response.status_code == 204:
             return {}
 
+        # Handle empty response bodies (some 201 responses have no body)
+        if not response.content:
+            return {}
+
         return response.json()
 
     def get(self, endpoint: str, params: dict | None = None) -> dict[str, Any]:
@@ -449,6 +453,211 @@ class JiraClient:
         if delete_subtasks:
             endpoint += "?deleteSubtasks=true"
         return self.delete(endpoint)
+
+    # =========================================================================
+    # Transition methods
+    # =========================================================================
+    def get_transitions(self, issue_key: str) -> list[dict[str, Any]]:
+        """Get available transitions for an issue.
+
+        Args:
+            issue_key: Issue key (e.g., PROJ-123)
+
+        Returns:
+            List of available transitions with id, name, and target status
+        """
+        result = self.get(f"issue/{issue_key}/transitions")
+        return result.get("transitions", [])
+
+    def transition_issue(
+        self,
+        issue_key: str,
+        transition_id: str,
+        comment: str | None = None,
+        fields: dict | None = None,
+    ) -> dict[str, Any]:
+        """Transition an issue to a new status.
+
+        Args:
+            issue_key: Issue key (e.g., PROJ-123)
+            transition_id: The transition ID (from get_transitions)
+            comment: Optional comment to add with the transition
+            fields: Optional fields to set during transition (e.g., resolution)
+
+        Returns:
+            Empty dict on success (204 response)
+        """
+        payload: dict[str, Any] = {
+            "transition": {"id": transition_id}
+        }
+
+        if comment:
+            payload["update"] = {
+                "comment": [
+                    {
+                        "add": {
+                            "body": {
+                                "type": "doc",
+                                "version": 1,
+                                "content": [
+                                    {
+                                        "type": "paragraph",
+                                        "content": [{"type": "text", "text": comment}]
+                                    }
+                                ]
+                            }
+                        }
+                    }
+                ]
+            }
+
+        if fields:
+            payload["fields"] = fields
+
+        return self.post(f"issue/{issue_key}/transitions", json=payload)
+
+    # =========================================================================
+    # Comment methods
+    # =========================================================================
+    def get_issue_comments(self, issue_key: str, max_results: int = 50) -> list[dict[str, Any]]:
+        """Get comments for an issue.
+
+        Args:
+            issue_key: Issue key (e.g., PROJ-123)
+            max_results: Maximum number of comments to return
+
+        Returns:
+            List of comment dictionaries
+        """
+        result = self.get(f"issue/{issue_key}/comment", params={"maxResults": max_results})
+        return result.get("comments", [])
+
+    def add_comment(self, issue_key: str, body: str) -> dict[str, Any]:
+        """Add a comment to an issue.
+
+        Args:
+            issue_key: Issue key (e.g., PROJ-123)
+            body: Comment text (plain text, will be converted to ADF)
+
+        Returns:
+            The created comment object
+        """
+        # Convert plain text to Atlassian Document Format
+        adf_body = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {
+                    "type": "paragraph",
+                    "content": [{"type": "text", "text": line}]
+                }
+                for line in body.split("\n")
+                if line.strip()
+            ] or [{"type": "paragraph", "content": [{"type": "text", "text": " "}]}]
+        }
+
+        return self.post(f"issue/{issue_key}/comment", json={"body": adf_body})
+
+    def update_comment(self, issue_key: str, comment_id: str, body: str) -> dict[str, Any]:
+        """Update an existing comment.
+
+        Args:
+            issue_key: Issue key (e.g., PROJ-123)
+            comment_id: The comment ID
+            body: New comment text (plain text, will be converted to ADF)
+
+        Returns:
+            The updated comment object
+        """
+        adf_body = {
+            "type": "doc",
+            "version": 1,
+            "content": [
+                {
+                    "type": "paragraph",
+                    "content": [{"type": "text", "text": line}]
+                }
+                for line in body.split("\n")
+                if line.strip()
+            ] or [{"type": "paragraph", "content": [{"type": "text", "text": " "}]}]
+        }
+
+        return self.put(f"issue/{issue_key}/comment/{comment_id}", json={"body": adf_body})
+
+    def delete_comment(self, issue_key: str, comment_id: str) -> dict[str, Any]:
+        """Delete a comment.
+
+        Args:
+            issue_key: Issue key (e.g., PROJ-123)
+            comment_id: The comment ID
+
+        Returns:
+            Empty dict on success (204 response)
+        """
+        return self.delete(f"issue/{issue_key}/comment/{comment_id}")
+
+    # =========================================================================
+    # Issue Link methods
+    # =========================================================================
+    def get_issue_link_types(self) -> list[dict[str, Any]]:
+        """Get all available issue link types.
+
+        Returns:
+            List of link type dictionaries with id, name, inward, outward
+        """
+        result = self.get("issueLinkType")
+        return result.get("issueLinkTypes", [])
+
+    def create_issue_link(
+        self,
+        link_type: str,
+        inward_issue: str,
+        outward_issue: str,
+        comment: str | None = None,
+    ) -> dict[str, Any]:
+        """Create a link between two issues.
+
+        Args:
+            link_type: The link type name (e.g., "Blocks", "Duplicate", "Relates")
+            inward_issue: The inward issue key (e.g., PROJ-123 blocks PROJ-456 - this is PROJ-456)
+            outward_issue: The outward issue key (e.g., PROJ-123 blocks PROJ-456 - this is PROJ-123)
+            comment: Optional comment to add with the link
+
+        Returns:
+            Empty dict on success (201 response)
+        """
+        payload: dict[str, Any] = {
+            "type": {"name": link_type},
+            "inwardIssue": {"key": inward_issue},
+            "outwardIssue": {"key": outward_issue},
+        }
+
+        if comment:
+            payload["comment"] = {
+                "body": {
+                    "type": "doc",
+                    "version": 1,
+                    "content": [
+                        {
+                            "type": "paragraph",
+                            "content": [{"type": "text", "text": comment}]
+                        }
+                    ]
+                }
+            }
+
+        return self.post("issueLink", json=payload)
+
+    def delete_issue_link(self, link_id: str) -> dict[str, Any]:
+        """Delete an issue link.
+
+        Args:
+            link_id: The link ID
+
+        Returns:
+            Empty dict on success (204 response)
+        """
+        return self.delete(f"issueLink/{link_id}")
 
     # =========================================================================
     # Project methods
