@@ -78,7 +78,9 @@ def issue_get(ctx, issue_keys: tuple[str, ...], raw: bool, include_custom_fields
                 issue["children"] = children_issues
             results.append(issue)
         else:
-            simplified = simplify_issue(issue, comments=issue_comments, children=children_issues)
+            # Use rich markup only for human-readable text output
+            use_rich = output_format == "text"
+            simplified = simplify_issue(issue, comments=issue_comments, children=children_issues, use_rich_markup=use_rich)
             # Apply field filtering
             filtered = filter_fields(simplified, selected_fields)
             results.append(filtered)

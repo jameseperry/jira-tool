@@ -41,8 +41,10 @@ def issue_children(ctx, issue_key: str, limit: int, fields: str | None, output_f
         for issue in issues:
             click.echo(issue.get("key", ""))
     elif output_format == "csv":
-        simplified = [filter_fields(simplify_issue(issue), selected_fields) for issue in issues]
+        # No rich markup for CSV output
+        simplified = [filter_fields(simplify_issue(issue, use_rich_markup=False), selected_fields) for issue in issues]
         click.echo(format_issues_csv(simplified), nl=False)
     else:
-        simplified = [filter_fields(simplify_issue(issue), selected_fields) for issue in issues]
+        # No rich markup for JSON/YAML output
+        simplified = [filter_fields(simplify_issue(issue, use_rich_markup=False), selected_fields) for issue in issues]
         output_data(simplified, output_format)

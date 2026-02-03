@@ -343,15 +343,13 @@ def format_issue_text(issue: dict) -> str:
     if issue.get("fix_versions"):
         lines.append(f"[bold]Fix Versions:[/bold] {', '.join(issue['fix_versions'])}")
     
-    # Description
+    # Description - already has Rich markup from extract_text_from_adf
     if issue.get("description"):
         lines.append("")
         lines.append("[bold]Description:[/bold]")
-        # Escape any Rich markup in description
+        # Description already contains Rich markup, just indent each line
         for desc_line in issue["description"].split("\n"):
-            # Escape brackets to prevent Rich interpreting them as markup
-            escaped = desc_line.replace("[", "\\[").replace("]", "\\]")
-            lines.append(f"  {escaped}")
+            lines.append(f"  {desc_line}")
     
     # Subtasks
     if issue.get("subtasks"):
@@ -395,10 +393,9 @@ def format_issue_text(issue: dict) -> str:
             lines.append(f"  [bold]{author}[/bold] [dim]({created})[/dim]")
             body = comment.get("body", "")
             if body:
+                # Comment body already contains Rich markup from extract_text_from_adf
                 for body_line in body.split("\n"):
-                    # Escape brackets in comment body
-                    escaped = body_line.replace("[", "\\[").replace("]", "\\]")
-                    lines.append(f"    {escaped}")
+                    lines.append(f"    {body_line}")
     
     content = "\n".join(lines)
     

@@ -32,41 +32,284 @@ def filter_custom_fields(data: dict) -> dict:
     return result
 
 
-def extract_text_from_adf(adf: dict | None) -> str | None:
-    """Extract plain text from Atlassian Document Format."""
+def extract_text_from_adf(adf: dict | None, use_rich_markup: bool = True) -> str | None:
+    """Extract text from Atlassian Document Format, optionally with Rich markup.
+    
+    Args:
+        adf: The ADF document dict from JIRA API
+        use_rich_markup: If True, return Rich-formatted markup. If False, return plain text.
+    
+    Returns:
+        Formatted string or None if no content
+    """
     if not adf or not isinstance(adf, dict):
         return None
     
-    def extract_content(node: dict) -> str:
-        if node.get("type") == "text":
-            return node.get("text", "")
+    def escape_rich(text: str) -> str:
+        """Escape Rich markup characters in text."""
+        # Escape brackets which Rich interprets as markup
+        return text.replace("[", "\\[").replace("]", "\\]")
+    
+    def apply_marks(text: str, marks: list[dict]) -> str:
+        """Apply ADF marks (formatting) to text, converting to Rich markup."""
+        if not use_rich_markup or not marks:
+            return escape_rich(text) if use_rich_markup else text
         
+        escaped = escape_rich(text)
+        
+        for mark in marks:
+            mark_type = mark.get("type", "")
+            
+            if mark_type == "strong":
+                escaped = f"[bold]{escaped}[/bold]"
+            elif mark_type == "em":
+                escaped = f"[italic]{escaped}[/italic]"
+            elif mark_type == "strike":
+                escaped = f"[strike]{escaped}[/strike]"
+            elif mark_type == "code":
+                escaped = f"[cyan]{escaped}[/cyan]"
+            elif mark_type == "underline":
+                escaped = f"[underline]{escaped}[/underline]"
+            elif mark_type == "link":
+                href = mark.get("attrs", {}).get("href", "")
+                # Rich supports clickable links with [link=URL]text[/link]
+                escaped = f"[link={href}]{escaped}[/link] [dim]({href})[/dim]"
+            elif mark_type == "textColor":
+                color = mark.get("attrs", {}).get("color", "")
+                if color:
+                    escaped = f"[{color}]{escaped}[/{color}]"
+            elif mark_type == "subsup":
+                # Superscript/subscript - just render as-is, Rich doesn't support these
+                pass
+        
+        return escaped
+    
+    def extract_content(node: dict, list_depth: int = 0, list_type: str | None = None, item_index: int = 0) -> str:
+        """Recursively extract content from ADF nodes."""
+        node_type = node.get("type", "")
         content = node.get("content", [])
-        parts = []
-        for child in content:
-            if isinstance(child, dict):
-                parts.append(extract_content(child))
+        attrs = node.get("attrs", {})
         
-        # Add newlines for block elements
-        if node.get("type") in ("paragraph", "heading", "listItem", "tableCell"):
-            return "".join(parts) + "\n"
-        elif node.get("type") == "hardBreak":
+        # Text node with optional marks
+        if node_type == "text":
+            text = node.get("text", "")
+            marks = node.get("marks", [])
+            return apply_marks(text, marks)
+        
+        # Hard break
+        if node_type == "hardBreak":
             return "\n"
         
-        return "".join(parts)
+        # Process children
+        parts = []
+        child_item_index = 0
+        for child in content:
+            if isinstance(child, dict):
+                # Track list item indices for ordered lists
+                if child.get("type") == "listItem":
+                    parts.append(extract_content(child, list_depth, list_type, child_item_index))
+                    child_item_index += 1
+                else:
+                    parts.append(extract_content(child, list_depth, list_type, item_index))
+        
+        joined = "".join(parts)
+        
+        # Block-level formatting
+        if node_type == "paragraph":
+            return joined + "\n"
+        
+        elif node_type == "heading":
+            level = attrs.get("level", 1)
+            if use_rich_markup:
+                # Use bold and different colors for heading levels
+                if level == 1:
+                    return f"[bold cyan]{joined}[/bold cyan]\n"
+                elif level == 2:
+                    return f"[bold blue]{joined}[/bold blue]\n"
+                elif level == 3:
+                    return f"[bold]{joined}[/bold]\n"
+                else:
+                    return f"[bold dim]{joined}[/bold dim]\n"
+            else:
+                return joined + "\n"
+        
+        elif node_type == "bulletList":
+            result = []
+            for i, child in enumerate(content):
+                if isinstance(child, dict):
+                    result.append(extract_content(child, list_depth + 1, "bullet", i))
+            return "".join(result)
+        
+        elif node_type == "orderedList":
+            result = []
+            for i, child in enumerate(content):
+                if isinstance(child, dict):
+                    result.append(extract_content(child, list_depth + 1, "ordered", i))
+            return "".join(result)
+        
+        elif node_type == "listItem":
+            indent = "  " * list_depth
+            if list_type == "ordered":
+                prefix = f"{item_index + 1}."
+            else:
+                prefix = "•"
+            # listItem contains paragraphs, strip their trailing newlines for cleaner output
+            item_content = joined.rstrip("\n")
+            return f"{indent}{prefix} {item_content}\n"
+        
+        elif node_type == "codeBlock":
+            language = attrs.get("language", "")
+            if use_rich_markup:
+                # Use dim background style for code blocks
+                lines = joined.rstrip("\n").split("\n")
+                formatted_lines = [f"[on grey23] {line} [/on grey23]" for line in lines]
+                lang_header = f"[dim]{language}[/dim]\n" if language else ""
+                return lang_header + "\n".join(formatted_lines) + "\n"
+            else:
+                return joined + "\n"
+        
+        elif node_type == "blockquote":
+            if use_rich_markup:
+                lines = joined.rstrip("\n").split("\n")
+                quoted = "\n".join(f"[dim]│[/dim] [italic]{line}[/italic]" for line in lines)
+                return quoted + "\n"
+            else:
+                lines = joined.rstrip("\n").split("\n")
+                return "\n".join(f"> {line}" for line in lines) + "\n"
+        
+        elif node_type == "rule":
+            if use_rich_markup:
+                return "[dim]────────────────────────────────[/dim]\n"
+            else:
+                return "---\n"
+        
+        elif node_type == "table":
+            # Tables are complex - render as simple text representation
+            return joined + "\n"
+        
+        elif node_type == "tableRow":
+            return joined
+        
+        elif node_type == "tableHeader":
+            if use_rich_markup:
+                return f"[bold]{joined}[/bold] | "
+            else:
+                return joined + " | "
+        
+        elif node_type == "tableCell":
+            return joined + " | "
+        
+        elif node_type == "mediaSingle" or node_type == "media":
+            # Media attachments - show placeholder
+            media_type = attrs.get("type", "file")
+            media_id = attrs.get("id", "")
+            if use_rich_markup:
+                return f"[dim]\\[{media_type}: {media_id}][/dim]"
+            else:
+                return f"[{media_type}: {media_id}]"
+        
+        elif node_type == "emoji":
+            # Try to render emoji by shortName or fallback
+            short_name = attrs.get("shortName", "")
+            text = attrs.get("text", short_name)
+            return text
+        
+        elif node_type == "mention":
+            # User/team mentions
+            mention_text = attrs.get("text", "@unknown")
+            if use_rich_markup:
+                return f"[cyan]{mention_text}[/cyan]"
+            else:
+                return mention_text
+        
+        elif node_type == "inlineCard" or node_type == "blockCard":
+            # Smart links/cards
+            url = attrs.get("url", "")
+            if use_rich_markup:
+                return f"[link={url}]{url}[/link]"
+            else:
+                return url
+        
+        elif node_type == "panel":
+            panel_type = attrs.get("panelType", "info")
+            # Panel types: info, note, warning, error, success
+            color_map = {
+                "info": "blue",
+                "note": "cyan", 
+                "warning": "yellow",
+                "error": "red",
+                "success": "green",
+            }
+            color = color_map.get(panel_type, "white")
+            if use_rich_markup:
+                return f"[{color}]┃[/{color}] {joined}"
+            else:
+                return f"[{panel_type.upper()}] {joined}"
+        
+        elif node_type == "expand":
+            title = attrs.get("title", "Details")
+            if use_rich_markup:
+                return f"[bold]▶ {title}[/bold]\n{joined}"
+            else:
+                return f"[{title}]\n{joined}"
+        
+        elif node_type == "status":
+            text = attrs.get("text", "")
+            status_color = attrs.get("color", "neutral")
+            color_map = {
+                "neutral": "white",
+                "purple": "magenta",
+                "blue": "blue",
+                "green": "green",
+                "yellow": "yellow",
+                "red": "red",
+            }
+            color = color_map.get(status_color, "white")
+            if use_rich_markup:
+                return f"[{color}]⦿ {text}[/{color}]"
+            else:
+                return f"[{text}]"
+        
+        elif node_type == "date":
+            timestamp = attrs.get("timestamp", "")
+            # Timestamp is in milliseconds
+            if timestamp:
+                try:
+                    from datetime import datetime
+                    dt = datetime.fromtimestamp(int(timestamp) / 1000)
+                    return dt.strftime("%Y-%m-%d")
+                except (ValueError, TypeError):
+                    return timestamp
+            return ""
+        
+        # Default: just return joined content
+        return joined
     
-    return extract_content(adf).strip() or None
+    result = extract_content(adf).strip()
+    return result or None
 
 
-def simplify_issue(issue: dict, comments: list[dict] | None = None, children: list[dict] | None = None) -> dict:
-    """Convert raw JIRA API issue to a simplified format."""
+def simplify_issue(
+    issue: dict,
+    comments: list[dict] | None = None,
+    children: list[dict] | None = None,
+    use_rich_markup: bool = True,
+) -> dict:
+    """Convert raw JIRA API issue to a simplified format.
+    
+    Args:
+        issue: Raw JIRA API issue dict
+        comments: Optional list of comment dicts
+        children: Optional list of child issue dicts
+        use_rich_markup: If True, format description/comments with Rich markup
+    """
     fields = issue.get("fields", {})
     
     simplified = {
         "key": issue.get("key"),
         "id": issue.get("id"),
         "summary": (fields.get("summary") or "").strip(),
-        "description": extract_text_from_adf(fields.get("description")),
+        "description": extract_text_from_adf(fields.get("description"), use_rich_markup=use_rich_markup),
         "status": fields.get("status", {}).get("name"),
         "type": fields.get("issuetype", {}).get("name"),
         "priority": normalize_priority(fields.get("priority", {}).get("name")),
@@ -153,7 +396,7 @@ def simplify_issue(issue: dict, comments: list[dict] | None = None, children: li
             {
                 "author": c.get("author", {}).get("displayName", "Unknown"),
                 "created": c.get("created"),
-                "body": extract_text_from_adf(c.get("body")),
+                "body": extract_text_from_adf(c.get("body"), use_rich_markup=use_rich_markup),
             }
             for c in comments
         ]
