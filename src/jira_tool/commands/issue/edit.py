@@ -13,7 +13,7 @@ from jira_tool.commands.issue import (
 
 
 @issue.command("edit")
-@click.argument("issue_key")
+@click.argument("issue_keys", nargs=-1, required=True)
 @click.option("--summary", "-s", default=None, help="New issue summary/title")
 @click.option("--description", "-d", default=None, help="New issue description")
 @click.option("--assignee", "-a", default=None, help="New assignee (use '' to unassign)")
@@ -27,7 +27,7 @@ from jira_tool.commands.issue import (
 @handle_api_errors
 def issue_edit(
     ctx,
-    issue_key: str,
+    issue_keys: tuple[str, ...],
     summary: str | None,
     description: str | None,
     assignee: str | None,
@@ -38,12 +38,15 @@ def issue_edit(
     dry_run: bool,
     output_format: str,
 ):
-    """Edit an existing JIRA issue.
+    """Edit one or more existing JIRA issues.
     
     \b
     Examples:
       # Update summary
       jira-tool issue edit PROJ-123 -s "New title"
+      
+      # Update multiple issues at once
+      jira-tool issue edit PROJ-123 PROJ-124 PROJ-125 --component Backend
       
       # Update description
       jira-tool issue edit PROJ-123 -d "New description"
@@ -100,60 +103,69 @@ def issue_edit(
     if parsed_extra_fields:
         translated_extra_fields = ctx.client.translate_field_names(parsed_extra_fields)
     
-    # Build the payload preview
-    payload = {"issue": issue_key}
+    results = []
     
-    if summary is not None:
-        payload["summary"] = summary
-    if description is not None:
-        payload["description"] = description
-    if assignee is not None:
-        payload["assignee"] = assignee if assignee else "(unassign)"
-    if priority is not None:
-        payload["priority"] = priority
-    if labels:
-        payload["labels"] = list(labels)
-    if components:
-        payload["components"] = list(components)
-    if parsed_extra_fields:
-        payload["extra_fields"] = parsed_extra_fields
-        payload["extra_fields_translated"] = translated_extra_fields
-    
-    if dry_run:
-        # Show what would be changed
-        click.echo(click.style("DRY RUN - No changes will be made", fg="yellow", bold=True), err=True)
-        click.echo(click.style("─" * 50, fg="yellow"), err=True)
-        click.echo("", err=True)
+    for issue_key in issue_keys:
+        # Build the payload preview
+        payload = {"issue": issue_key}
         
-        click.echo(click.style("Changes to apply:", fg="cyan", bold=True), err=True)
-        output_data(payload, output_format if output_format != "text" else "yaml")
-        click.echo("", err=True)
+        if summary is not None:
+            payload["summary"] = summary
+        if description is not None:
+            payload["description"] = description
+        if assignee is not None:
+            payload["assignee"] = assignee if assignee else "(unassign)"
+        if priority is not None:
+            payload["priority"] = priority
+        if labels:
+            payload["labels"] = list(labels)
+        if components:
+            payload["components"] = list(components)
+        if parsed_extra_fields:
+            payload["extra_fields"] = parsed_extra_fields
+            payload["extra_fields_translated"] = translated_extra_fields
         
-        click.echo(click.style(f"✓ [DRY RUN] Would update issue: {issue_key}", fg="green", bold=True))
-        if ctx.client.base_url:
-            browse_url = f"{ctx.client.base_url.replace('/rest/api/3', '')}/browse/{issue_key}"
-            click.echo(f"  URL: {browse_url}")
-    else:
-        # Actually update the issue
-        ctx.client.update_issue(
-            issue_key=issue_key,
-            summary=summary,
-            description=description,
-            assignee=assignee,
-            priority=priority,
-            labels=list(labels) if labels else None,
-            components=list(components) if components else None,
-            extra_fields=translated_extra_fields,
-        )
-        
-        if output_format == "text":
-            click.echo(click.style(f"✓ Updated issue: {issue_key}", fg="green", bold=True))
+        if dry_run:
+            # Show what would be changed
+            if issue_key == issue_keys[0]:
+                click.echo(click.style("DRY RUN - No changes will be made", fg="yellow", bold=True), err=True)
+                click.echo(click.style("─" * 50, fg="yellow"), err=True)
+                click.echo("", err=True)
+                click.echo(click.style("Changes to apply:", fg="cyan", bold=True), err=True)
+                # Only show payload once (same for all issues)
+                display_payload = {k: v for k, v in payload.items() if k != "issue"}
+                output_data(display_payload, output_format if output_format != "text" else "yaml")
+                click.echo("", err=True)
+            
+            click.echo(click.style(f"✓ [DRY RUN] Would update issue: {issue_key}", fg="green", bold=True))
             if ctx.client.base_url:
                 browse_url = f"{ctx.client.base_url.replace('/rest/api/3', '')}/browse/{issue_key}"
                 click.echo(f"  URL: {browse_url}")
+            results.append({"key": issue_key, "status": "would_update"})
         else:
-            output = {
-                "key": issue_key,
-                "updated": True,
-            }
-            output_data(output, output_format)
+            # Actually update the issue
+            ctx.client.update_issue(
+                issue_key=issue_key,
+                summary=summary,
+                description=description,
+                assignee=assignee,
+                priority=priority,
+                labels=list(labels) if labels else None,
+                components=list(components) if components else None,
+                extra_fields=translated_extra_fields,
+            )
+            
+            if output_format == "text":
+                click.echo(click.style(f"✓ Updated issue: {issue_key}", fg="green", bold=True))
+                if ctx.client.base_url:
+                    browse_url = f"{ctx.client.base_url.replace('/rest/api/3', '')}/browse/{issue_key}"
+                    click.echo(f"  URL: {browse_url}")
+            
+            results.append({"key": issue_key, "updated": True})
+    
+    # Output summary for non-text formats
+    if output_format != "text":
+        if len(results) == 1:
+            output_data(results[0], output_format)
+        else:
+            output_data(results, output_format)
