@@ -11,6 +11,56 @@ from jira_tool.commands.issue import (
 from jira_tool.utils import markdown_to_adf
 
 
+def adf_has_formatting(adf: dict | None) -> bool:
+    """Check if ADF document already has proper formatting.
+    
+    Returns True if the ADF contains formatting marks (bold, italic, links, code, etc.)
+    or structured blocks (headings, lists, code blocks, blockquotes, etc.).
+    
+    This is used to detect documents that are already properly formatted,
+    so we don't accidentally destroy their formatting by re-processing.
+    """
+    if not adf or not isinstance(adf, dict):
+        return False
+    
+    # Block types that indicate real formatting (beyond plain paragraphs)
+    formatted_block_types = {
+        "heading", "bulletList", "orderedList", "codeBlock", 
+        "blockquote", "rule", "table", "panel", "expand",
+        "mediaSingle", "mediaGroup",
+    }
+    
+    def check_node(node: dict) -> bool:
+        if not isinstance(node, dict):
+            return False
+        
+        node_type = node.get("type", "")
+        
+        # Check if this is a formatted block type
+        if node_type in formatted_block_types:
+            return True
+        
+        # Check for text marks (bold, italic, links, code, etc.)
+        if node_type == "text":
+            marks = node.get("marks", [])
+            if marks:
+                return True
+        
+        # Check for special inline nodes
+        if node_type in ("mention", "emoji", "inlineCard", "status", "date"):
+            return True
+        
+        # Recursively check children
+        content = node.get("content", [])
+        for child in content:
+            if check_node(child):
+                return True
+        
+        return False
+    
+    return check_node(adf)
+
+
 def extract_plain_text_from_adf(adf: dict | None) -> str | None:
     """Extract plain text from ADF, preserving markdown syntax that may be in the text.
     
@@ -96,6 +146,10 @@ def extract_plain_text_from_adf(adf: dict | None) -> str | None:
     help="Show what would be changed without actually updating"
 )
 @click.option(
+    "--force", "-f", is_flag=True, default=False,
+    help="Fix formatting even if the document appears to already be formatted"
+)
+@click.option(
     "--show-before", is_flag=True, default=False,
     help="Show the extracted text before conversion"
 )
@@ -110,6 +164,7 @@ def issue_fix_formatting(
     ctx,
     issue_keys: tuple[str, ...],
     dry_run: bool,
+    force: bool,
     show_before: bool,
     show_after: bool,
     output_format: str,
@@ -119,6 +174,10 @@ def issue_fix_formatting(
     This command fetches issues that have raw markdown text in their descriptions
     (e.g., literal **bold** or [links](url) showing as plain text) and re-saves
     them with proper ADF formatting so the markdown renders correctly in JIRA.
+    
+    Issues that already have proper ADF formatting (bold, links, headings, lists,
+    code blocks, etc.) are automatically skipped to avoid destroying existing
+    formatting. Use --force to override this check.
     
     \b
     Examples:
@@ -130,6 +189,9 @@ def issue_fix_formatting(
       
       # Preview what would be changed
       jira-tool issue fix-formatting PROJ-123 --dry-run --show-before --show-after
+      
+      # Force re-processing even if already formatted
+      jira-tool issue fix-formatting PROJ-123 --force
     """
     results = []
     
@@ -145,6 +207,16 @@ def issue_fix_formatting(
                 "key": issue_key,
                 "status": "skipped",
                 "reason": "no description",
+            })
+            continue
+        
+        # Check if already properly formatted (unless --force is used)
+        if not force and adf_has_formatting(description_adf):
+            click.echo(click.style(f"⏭ {issue_key}: Already has ADF formatting, skipping (use --force to override)", fg="cyan"), err=True)
+            results.append({
+                "key": issue_key,
+                "status": "skipped",
+                "reason": "already formatted",
             })
             continue
         
