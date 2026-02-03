@@ -1,5 +1,7 @@
 """Utility functions for JIRA tool."""
 
+import re
+
 
 def normalize_priority(priority: str | None) -> str | None:
     """Normalize priority to short form (P1, P2, P3, etc.)."""
@@ -29,6 +31,325 @@ def filter_custom_fields(data: dict) -> dict:
             ]
         else:
             result[key] = value
+    return result
+
+
+def markdown_to_adf(text: str) -> dict:
+    """Convert Markdown text to Atlassian Document Format (ADF).
+    
+    Supports:
+    - **bold** and __bold__
+    - *italic* and _italic_
+    - ~~strikethrough~~
+    - `inline code`
+    - [links](url)
+    - # Headings (levels 1-6)
+    - - Bullet lists (-, *, +)
+    - 1. Numbered lists
+    - ```code blocks``` with optional language
+    - > Blockquotes
+    - --- Horizontal rules
+    - Hard line breaks (two trailing spaces or backslash)
+    
+    Args:
+        text: Markdown-formatted text
+        
+    Returns:
+        ADF document dict
+    """
+    if not text:
+        return {
+            "type": "doc",
+            "version": 1,
+            "content": [{"type": "paragraph", "content": [{"type": "text", "text": " "}]}]
+        }
+    
+    lines = text.split("\n")
+    content = []
+    i = 0
+    
+    while i < len(lines):
+        line = lines[i]
+        
+        # Code block (fenced)
+        if line.startswith("```"):
+            language = line[3:].strip()
+            code_lines = []
+            i += 1
+            while i < len(lines) and not lines[i].startswith("```"):
+                code_lines.append(lines[i])
+                i += 1
+            code_text = "\n".join(code_lines)
+            code_block = {
+                "type": "codeBlock",
+                "content": [{"type": "text", "text": code_text}] if code_text else []
+            }
+            if language:
+                code_block["attrs"] = {"language": language}
+            content.append(code_block)
+            i += 1
+            continue
+        
+        # Horizontal rule
+        if re.match(r'^(-{3,}|_{3,}|\*{3,})\s*$', line):
+            content.append({"type": "rule"})
+            i += 1
+            continue
+        
+        # Heading
+        heading_match = re.match(r'^(#{1,6})\s+(.+)$', line)
+        if heading_match:
+            level = len(heading_match.group(1))
+            heading_text = heading_match.group(2)
+            content.append({
+                "type": "heading",
+                "attrs": {"level": level},
+                "content": _parse_inline_markdown(heading_text)
+            })
+            i += 1
+            continue
+        
+        # Blockquote
+        if line.startswith(">"):
+            quote_lines = []
+            while i < len(lines) and lines[i].startswith(">"):
+                # Remove the > prefix and optional space
+                quote_line = re.sub(r'^>\s?', '', lines[i])
+                quote_lines.append(quote_line)
+                i += 1
+            quote_text = "\n".join(quote_lines)
+            # Parse the quote content recursively (simplified: just paragraphs)
+            quote_content = []
+            for para in quote_text.split("\n\n"):
+                if para.strip():
+                    quote_content.append({
+                        "type": "paragraph",
+                        "content": _parse_inline_markdown(para.replace("\n", " "))
+                    })
+            if quote_content:
+                content.append({
+                    "type": "blockquote",
+                    "content": quote_content
+                })
+            continue
+        
+        # Unordered list (including task lists like - [ ] or - [x])
+        if re.match(r'^[\-\*\+]\s+', line):
+            list_items = []
+            while i < len(lines) and re.match(r'^[\-\*\+]\s+', lines[i]):
+                item_text = re.sub(r'^[\-\*\+]\s+', '', lines[i])
+                # Strip task list checkbox syntax (- [ ] or - [x] or - [X])
+                item_text = re.sub(r'^\[[ xX]\]\s*', '', item_text)
+                list_items.append({
+                    "type": "listItem",
+                    "content": [{
+                        "type": "paragraph",
+                        "content": _parse_inline_markdown(item_text)
+                    }]
+                })
+                i += 1
+            content.append({
+                "type": "bulletList",
+                "content": list_items
+            })
+            continue
+        
+        # Ordered list
+        if re.match(r'^\d+\.\s+', line):
+            list_items = []
+            while i < len(lines) and re.match(r'^\d+\.\s+', lines[i]):
+                item_text = re.sub(r'^\d+\.\s+', '', lines[i])
+                list_items.append({
+                    "type": "listItem",
+                    "content": [{
+                        "type": "paragraph",
+                        "content": _parse_inline_markdown(item_text)
+                    }]
+                })
+                i += 1
+            content.append({
+                "type": "orderedList",
+                "content": list_items
+            })
+            continue
+        
+        # Empty line (paragraph break)
+        if not line.strip():
+            i += 1
+            continue
+        
+        # Regular paragraph - collect consecutive non-empty, non-special lines
+        para_lines = []
+        while i < len(lines):
+            current = lines[i]
+            # Stop at empty lines or special block elements
+            if not current.strip():
+                break
+            if current.startswith("```") or current.startswith("#") or current.startswith(">"):
+                break
+            if re.match(r'^[\-\*\+]\s+', current) or re.match(r'^\d+\.\s+', current):
+                break
+            if re.match(r'^(-{3,}|_{3,}|\*{3,})\s*$', current):
+                break
+            para_lines.append(current)
+            i += 1
+        
+        if para_lines:
+            # Check for hard breaks (two trailing spaces or backslash)
+            para_content = []
+            for j, pline in enumerate(para_lines):
+                # Handle hard breaks
+                hard_break = pline.endswith("  ") or pline.endswith("\\")
+                if pline.endswith("\\"):
+                    pline = pline[:-1]
+                pline = pline.rstrip()
+                
+                inline_content = _parse_inline_markdown(pline)
+                para_content.extend(inline_content)
+                
+                if hard_break and j < len(para_lines) - 1:
+                    para_content.append({"type": "hardBreak"})
+                elif j < len(para_lines) - 1:
+                    # Soft break - add space between lines
+                    para_content.append({"type": "text", "text": " "})
+            
+            content.append({
+                "type": "paragraph",
+                "content": para_content if para_content else [{"type": "text", "text": " "}]
+            })
+    
+    # Ensure we have at least one content block
+    if not content:
+        content = [{"type": "paragraph", "content": [{"type": "text", "text": " "}]}]
+    
+    return {
+        "type": "doc",
+        "version": 1,
+        "content": content
+    }
+
+
+def _parse_inline_markdown(text: str) -> list[dict]:
+    """Parse inline Markdown elements (bold, italic, code, links) into ADF text nodes.
+    
+    Args:
+        text: Text with inline Markdown formatting
+        
+    Returns:
+        List of ADF text nodes with appropriate marks
+    """
+    if not text:
+        return [{"type": "text", "text": " "}]
+    
+    result = []
+    
+    # Regex patterns for inline elements (order matters - more specific first)
+    patterns = [
+        # Links: [text](url)
+        (r'\[([^\]]+)\]\(([^)]+)\)', 'link'),
+        # Bold+Italic: ***text*** or ___text___
+        (r'\*\*\*(.+?)\*\*\*|___(.+?)___', 'bold_italic'),
+        # Bold: **text** or __text__
+        (r'\*\*(.+?)\*\*|__(.+?)__', 'bold'),
+        # Italic: *text* or _text_ (but not inside words for underscore)
+        (r'\*(.+?)\*|(?<![a-zA-Z0-9])_(.+?)_(?![a-zA-Z0-9])', 'italic'),
+        # Strikethrough: ~~text~~
+        (r'~~(.+?)~~', 'strike'),
+        # Inline code: `code`
+        (r'`([^`]+)`', 'code'),
+    ]
+    
+    def process_text(txt: str, marks: list[dict] | None = None) -> list[dict]:
+        """Process text, finding and handling inline patterns."""
+        if not txt:
+            return []
+        
+        marks = marks or []
+        
+        # Find the earliest match among all patterns
+        earliest_match = None
+        earliest_pos = len(txt)
+        matched_pattern = None
+        
+        for pattern, ptype in patterns:
+            match = re.search(pattern, txt)
+            if match and match.start() < earliest_pos:
+                earliest_pos = match.start()
+                earliest_match = match
+                matched_pattern = ptype
+        
+        if earliest_match is None:
+            # No patterns found, return plain text with current marks
+            if txt:
+                node = {"type": "text", "text": txt}
+                if marks:
+                    node["marks"] = marks.copy()
+                return [node]
+            return []
+        
+        result = []
+        
+        # Add text before the match
+        if earliest_pos > 0:
+            before_text = txt[:earliest_pos]
+            node = {"type": "text", "text": before_text}
+            if marks:
+                node["marks"] = marks.copy()
+            result.append(node)
+        
+        # Process the match
+        if matched_pattern == 'link':
+            link_text = earliest_match.group(1)
+            link_url = earliest_match.group(2)
+            link_marks = marks.copy() + [{"type": "link", "attrs": {"href": link_url}}]
+            # Recursively process link text for nested formatting
+            link_nodes = process_text(link_text, link_marks)
+            result.extend(link_nodes)
+        
+        elif matched_pattern == 'bold_italic':
+            inner_text = earliest_match.group(1) or earliest_match.group(2)
+            new_marks = marks.copy() + [{"type": "strong"}, {"type": "em"}]
+            inner_nodes = process_text(inner_text, new_marks)
+            result.extend(inner_nodes)
+        
+        elif matched_pattern == 'bold':
+            inner_text = earliest_match.group(1) or earliest_match.group(2)
+            new_marks = marks.copy() + [{"type": "strong"}]
+            inner_nodes = process_text(inner_text, new_marks)
+            result.extend(inner_nodes)
+        
+        elif matched_pattern == 'italic':
+            inner_text = earliest_match.group(1) or earliest_match.group(2)
+            new_marks = marks.copy() + [{"type": "em"}]
+            inner_nodes = process_text(inner_text, new_marks)
+            result.extend(inner_nodes)
+        
+        elif matched_pattern == 'strike':
+            inner_text = earliest_match.group(1)
+            new_marks = marks.copy() + [{"type": "strike"}]
+            inner_nodes = process_text(inner_text, new_marks)
+            result.extend(inner_nodes)
+        
+        elif matched_pattern == 'code':
+            code_text = earliest_match.group(1)
+            code_marks = marks.copy() + [{"type": "code"}]
+            node = {"type": "text", "text": code_text, "marks": code_marks}
+            result.append(node)
+        
+        # Process text after the match
+        after_pos = earliest_match.end()
+        if after_pos < len(txt):
+            after_nodes = process_text(txt[after_pos:], marks)
+            result.extend(after_nodes)
+        
+        return result
+    
+    result = process_text(text)
+    
+    # Ensure we return at least something
+    if not result:
+        return [{"type": "text", "text": text or " "}]
+    
     return result
 
 

@@ -6,6 +6,8 @@ from typing import Any
 
 import requests
 
+from jira_tool.utils import markdown_to_adf
+
 
 # HTTP status code descriptions for common errors
 HTTP_STATUS_DESCRIPTIONS = {
@@ -319,7 +321,7 @@ class JiraClient:
             project_key: Project key (e.g., PROJ)
             summary: Issue summary/title
             issue_type: Issue type (e.g., Bug, Story, Task, Epic)
-            description: Issue description (plain text, will be converted to ADF)
+            description: Issue description (Markdown supported, converted to ADF)
             assignee: Assignee account ID or email
             priority: Priority name (e.g., "P1: High")
             labels: List of labels
@@ -337,19 +339,8 @@ class JiraClient:
         }
 
         if description:
-            # Convert plain text to Atlassian Document Format
-            fields["description"] = {
-                "type": "doc",
-                "version": 1,
-                "content": [
-                    {
-                        "type": "paragraph",
-                        "content": [{"type": "text", "text": line}]
-                    }
-                    for line in description.split("\n")
-                    if line.strip()  # Skip empty lines
-                ] or [{"type": "paragraph", "content": [{"type": "text", "text": " "}]}]
-            }
+            # Convert Markdown to Atlassian Document Format
+            fields["description"] = markdown_to_adf(description)
 
         if assignee:
             # Could be account ID or email - JIRA expects accountId
@@ -388,7 +379,7 @@ class JiraClient:
         Args:
             issue_key: Issue key (e.g., PROJ-123)
             summary: New summary/title
-            description: New description (plain text, will be converted to ADF)
+            description: New description (Markdown supported, converted to ADF)
             assignee: New assignee account ID or email (use "" to unassign)
             priority: New priority name
             labels: New labels (replaces existing)
@@ -404,19 +395,8 @@ class JiraClient:
             fields["summary"] = summary
 
         if description is not None:
-            # Convert plain text to Atlassian Document Format
-            fields["description"] = {
-                "type": "doc",
-                "version": 1,
-                "content": [
-                    {
-                        "type": "paragraph",
-                        "content": [{"type": "text", "text": line}]
-                    }
-                    for line in description.split("\n")
-                    if line.strip()
-                ] or [{"type": "paragraph", "content": [{"type": "text", "text": " "}]}]
-            }
+            # Convert Markdown to Atlassian Document Format
+            fields["description"] = markdown_to_adf(description)
 
         if assignee is not None:
             if assignee == "":
@@ -481,7 +461,7 @@ class JiraClient:
         Args:
             issue_key: Issue key (e.g., PROJ-123)
             transition_id: The transition ID (from get_transitions)
-            comment: Optional comment to add with the transition
+            comment: Optional comment to add with the transition (Markdown supported)
             fields: Optional fields to set during transition (e.g., resolution)
 
         Returns:
@@ -496,16 +476,7 @@ class JiraClient:
                 "comment": [
                     {
                         "add": {
-                            "body": {
-                                "type": "doc",
-                                "version": 1,
-                                "content": [
-                                    {
-                                        "type": "paragraph",
-                                        "content": [{"type": "text", "text": comment}]
-                                    }
-                                ]
-                            }
+                            "body": markdown_to_adf(comment)
                         }
                     }
                 ]
@@ -537,24 +508,13 @@ class JiraClient:
 
         Args:
             issue_key: Issue key (e.g., PROJ-123)
-            body: Comment text (plain text, will be converted to ADF)
+            body: Comment text (Markdown supported, converted to ADF)
 
         Returns:
             The created comment object
         """
-        # Convert plain text to Atlassian Document Format
-        adf_body = {
-            "type": "doc",
-            "version": 1,
-            "content": [
-                {
-                    "type": "paragraph",
-                    "content": [{"type": "text", "text": line}]
-                }
-                for line in body.split("\n")
-                if line.strip()
-            ] or [{"type": "paragraph", "content": [{"type": "text", "text": " "}]}]
-        }
+        # Convert Markdown to Atlassian Document Format
+        adf_body = markdown_to_adf(body)
 
         return self.post(f"issue/{issue_key}/comment", json={"body": adf_body})
 
@@ -564,23 +524,12 @@ class JiraClient:
         Args:
             issue_key: Issue key (e.g., PROJ-123)
             comment_id: The comment ID
-            body: New comment text (plain text, will be converted to ADF)
+            body: New comment text (Markdown supported, converted to ADF)
 
         Returns:
             The updated comment object
         """
-        adf_body = {
-            "type": "doc",
-            "version": 1,
-            "content": [
-                {
-                    "type": "paragraph",
-                    "content": [{"type": "text", "text": line}]
-                }
-                for line in body.split("\n")
-                if line.strip()
-            ] or [{"type": "paragraph", "content": [{"type": "text", "text": " "}]}]
-        }
+        adf_body = markdown_to_adf(body)
 
         return self.put(f"issue/{issue_key}/comment/{comment_id}", json={"body": adf_body})
 
@@ -621,7 +570,7 @@ class JiraClient:
             link_type: The link type name (e.g., "Blocks", "Duplicate", "Relates")
             inward_issue: The inward issue key (e.g., PROJ-123 blocks PROJ-456 - this is PROJ-456)
             outward_issue: The outward issue key (e.g., PROJ-123 blocks PROJ-456 - this is PROJ-123)
-            comment: Optional comment to add with the link
+            comment: Optional comment to add with the link (Markdown supported)
 
         Returns:
             Empty dict on success (201 response)
@@ -634,16 +583,7 @@ class JiraClient:
 
         if comment:
             payload["comment"] = {
-                "body": {
-                    "type": "doc",
-                    "version": 1,
-                    "content": [
-                        {
-                            "type": "paragraph",
-                            "content": [{"type": "text", "text": comment}]
-                        }
-                    ]
-                }
+                "body": markdown_to_adf(comment)
             }
 
         return self.post("issueLink", json=payload)
