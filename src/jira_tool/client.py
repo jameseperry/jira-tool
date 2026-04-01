@@ -154,6 +154,7 @@ class JiraClient:
         """
         self.base_url = base_url.rstrip("/")
         self.api_url = f"{self.base_url}/rest/api/3"
+        self.agile_url = f"{self.base_url}/rest/agile/1.0"
         self.session = requests.Session()
         self.session.auth = (email, api_token)
         self.session.headers.update({
@@ -236,6 +237,74 @@ class JiraClient:
     def delete(self, endpoint: str) -> dict[str, Any]:
         """Make a DELETE request."""
         return self._request("DELETE", endpoint)
+
+    def _agile_request(
+        self,
+        method: str,
+        endpoint: str,
+        params: dict | None = None,
+        json: dict | None = None,
+    ) -> dict[str, Any]:
+        """Make a request to the JIRA Agile API.
+
+        Args:
+            method: HTTP method (GET, POST, PUT, DELETE)
+            endpoint: API endpoint (without base URL)
+            params: Query parameters
+            json: JSON body for POST/PUT requests
+
+        Returns:
+            Response JSON as dictionary
+
+        Raises:
+            JiraError: If the API returns an error
+        """
+        url = f"{self.agile_url}/{endpoint.lstrip('/')}"
+
+        response = self.session.request(
+            method=method,
+            url=url,
+            params=params,
+            json=json,
+        )
+
+        if not response.ok:
+            try:
+                error_data = response.json()
+            except ValueError:
+                error_data = {"message": response.text}
+
+            # Capture response headers (case-insensitive dict to regular dict)
+            response_headers = {k.lower(): v for k, v in response.headers.items()}
+
+            raise JiraError(
+                message=f"JIRA Agile API error: {response.status_code}",
+                status_code=response.status_code,
+                response=error_data,
+                url=url,
+                method=method,
+                request_body=json,
+                query_params=params,
+                response_headers=response_headers,
+            )
+
+        # Some endpoints return no content
+        if response.status_code == 204:
+            return {}
+
+        # Handle empty response bodies
+        if not response.content:
+            return {}
+
+        return response.json()
+
+    def agile_get(self, endpoint: str, params: dict | None = None) -> dict[str, Any]:
+        """Make a GET request to Agile API."""
+        return self._agile_request("GET", endpoint, params=params)
+
+    def agile_post(self, endpoint: str, json: dict | None = None) -> dict[str, Any]:
+        """Make a POST request to Agile API."""
+        return self._agile_request("POST", endpoint, json=json)
 
     # =========================================================================
     # Issue methods
@@ -434,6 +503,52 @@ class JiraClient:
             endpoint += "?deleteSubtasks=true"
         return self.delete(endpoint)
 
+    def move_issue(
+        self,
+        issue_key: str,
+        target_project: str,
+        component_mapping: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
+        """Move an issue to a different project.
+
+        Args:
+            issue_key: Issue key (e.g., PROJ-123)
+            target_project: Target project key
+            component_mapping: Optional mapping of old component names to new component names
+
+        Returns:
+            Response dict (may be empty on 204)
+
+        Note:
+            The issue key will change after the move. The new key is not returned by the API,
+            but follows the pattern: {target_project}-{new_number}
+
+        Raises:
+            JiraError: If the move fails (incompatible issue types, required fields, permissions)
+        """
+        fields: dict[str, Any] = {
+            "project": {"key": target_project}
+        }
+
+        # If component mapping is provided, update components
+        if component_mapping:
+            # Get current issue to see its components
+            issue = self.get_issue(issue_key, fields=["components"])
+            current_components = issue.get("fields", {}).get("components", [])
+
+            # Map components
+            new_components = []
+            for comp in current_components:
+                old_name = comp.get("name", "")
+                new_name = component_mapping.get(old_name, old_name)
+                new_components.append({"name": new_name})
+
+            if new_components:
+                fields["components"] = new_components
+
+        result = self.put(f"issue/{issue_key}", json={"fields": fields})
+        return result
+
     # =========================================================================
     # Transition methods
     # =========================================================================
@@ -622,6 +737,57 @@ class JiraClient:
         return self.get(f"project/{project_key}")
 
     # =========================================================================
+    # Component methods
+    # =========================================================================
+    def get_project_components(self, project_key: str) -> list[dict[str, Any]]:
+        """Get all components for a project.
+
+        Args:
+            project_key: The project key
+
+        Returns:
+            List of component dictionaries
+        """
+        return self.get(f"project/{project_key}/components")
+
+    def create_component(
+        self,
+        project_key: str,
+        name: str,
+        description: str | None = None,
+        lead_account_id: str | None = None,
+        assignee_type: str | None = None,
+    ) -> dict[str, Any]:
+        """Create a new component in a project.
+
+        Args:
+            project_key: The project key
+            name: Component name
+            description: Optional component description
+            lead_account_id: Optional component lead's account ID
+            assignee_type: Optional assignee type (PROJECT_DEFAULT, COMPONENT_LEAD,
+                          PROJECT_LEAD, UNASSIGNED)
+
+        Returns:
+            Created component dictionary
+        """
+        payload: dict[str, Any] = {
+            "name": name,
+            "project": project_key,
+        }
+
+        if description is not None:
+            payload["description"] = description
+
+        if lead_account_id is not None:
+            payload["leadAccountId"] = lead_account_id
+
+        if assignee_type is not None:
+            payload["assigneeType"] = assignee_type
+
+        return self.post("component", json=payload)
+
+    # =========================================================================
     # Field methods
     # =========================================================================
     def get_fields(self) -> list[dict[str, Any]]:
@@ -758,4 +924,135 @@ class JiraClient:
             translated[field_id] = formatted_value
         
         return translated
+
+    # =========================================================================
+    # Board methods (Agile API)
+    # =========================================================================
+    def get_boards(
+        self,
+        project_key: str | None = None,
+        board_type: str | None = None,
+        name: str | None = None,
+        max_results: int = 50,
+    ) -> list[dict[str, Any]]:
+        """Get all boards, optionally filtered.
+
+        Args:
+            project_key: Filter by project key
+            board_type: Filter by type (scrum, kanban)
+            name: Filter by board name (contains match)
+            max_results: Maximum results to return
+
+        Returns:
+            List of board dictionaries
+        """
+        params: dict[str, Any] = {"maxResults": max_results}
+        if project_key:
+            params["projectKeyOrId"] = project_key
+        if board_type:
+            params["type"] = board_type
+        if name:
+            params["name"] = name
+
+        result = self.agile_get("board", params=params)
+        return result.get("values", [])
+
+    def get_board(self, board_id: int | str) -> dict[str, Any]:
+        """Get a specific board by ID.
+
+        Args:
+            board_id: The board ID
+
+        Returns:
+            Board dictionary
+        """
+        return self.agile_get(f"board/{board_id}")
+
+    def get_board_configuration(self, board_id: int | str) -> dict[str, Any]:
+        """Get board configuration including columns, filters, etc.
+
+        Args:
+            board_id: The board ID
+
+        Returns:
+            Board configuration dictionary
+        """
+        return self.agile_get(f"board/{board_id}/configuration")
+
+    def create_board(
+        self,
+        name: str,
+        board_type: str,
+        filter_id: int | str,
+    ) -> dict[str, Any]:
+        """Create a new board.
+
+        Args:
+            name: Board name
+            board_type: Board type (scrum or kanban)
+            filter_id: ID of the filter (JQL query) to use for this board
+
+        Returns:
+            Created board dictionary
+        """
+        payload = {
+            "name": name,
+            "type": board_type,
+            "filterId": int(filter_id),
+        }
+        return self.agile_post("board", json=payload)
+
+    # =========================================================================
+    # Filter methods
+    # =========================================================================
+    def get_filters(self, max_results: int = 50) -> list[dict[str, Any]]:
+        """Get filters owned by or shared with the current user.
+
+        Args:
+            max_results: Maximum results to return
+
+        Returns:
+            List of filter dictionaries
+        """
+        result = self.get("filter/my", params={"maxResults": max_results})
+        return result.get("values", []) if isinstance(result, dict) else result
+
+    def get_filter(self, filter_id: int | str) -> dict[str, Any]:
+        """Get a specific filter by ID.
+
+        Args:
+            filter_id: The filter ID
+
+        Returns:
+            Filter dictionary with id, name, jql, etc.
+        """
+        return self.get(f"filter/{filter_id}")
+
+    def create_filter(
+        self,
+        name: str,
+        jql: str,
+        description: str | None = None,
+        favourite: bool = False,
+    ) -> dict[str, Any]:
+        """Create a new filter.
+
+        Args:
+            name: Filter name
+            jql: JQL query string
+            description: Optional filter description
+            favourite: Whether to mark as favourite
+
+        Returns:
+            Created filter dictionary
+        """
+        payload: dict[str, Any] = {
+            "name": name,
+            "jql": jql,
+            "favourite": favourite,
+        }
+        if description:
+            payload["description"] = description
+
+        return self.post("filter", json=payload)
 

@@ -323,5 +323,7 @@ from jira_tool.commands.issue.transition import issue_transition
 from jira_tool.commands.issue.comment import issue_comment
 from jira_tool.commands.issue.link import issue_link
 from jira_tool.commands.issue.fix_formatting import issue_fix_formatting
+from jira_tool.commands.issue.move import move
 
 # Commands are registered via decorators in their respective modules
+issue.add_command(move)
