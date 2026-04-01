@@ -13,7 +13,7 @@ from jira_tool.client import JiraError
     "-c",
     "component_mappings",
     multiple=True,
-    help='Map component names: "OldName=NewName". Can be specified multiple times.'
+    help='Map component names: "NewName=OldName". Can be specified multiple times.'
 )
 @click.option(
     "--dry-run",
@@ -34,24 +34,24 @@ def move(ctx, issue_key: str, target_project: str, component_mappings: tuple[str
     \b
     Examples:
       # Simple move
-      jira-tool issue move AISOLVE-1 NEWPROJ
+      jira-tool issue move OLDPROJ-1 NEWPROJ
 
       # Move with component mapping
-      jira-tool issue move AISOLVE-1 NEWPROJ -c "Backend=API" -c "Frontend=UI"
+      jira-tool issue move OLDPROJ-1 NEWPROJ -c "API=Backend" -c "UI=Frontend"
 
       # Preview the move without executing
-      jira-tool issue move AISOLVE-1 NEWPROJ --dry-run
+      jira-tool issue move OLDPROJ-1 NEWPROJ --dry-run
     """
     # Check global dry-run flag as well as local flag
     dry_run = dry_run or ctx.dry_run
 
-    # Parse component mappings from "Old=New" format
+    # Parse component mappings from "New=Old" format
     component_map = {}
     for mapping in component_mappings:
         if "=" not in mapping:
-            click.echo(click.style(f"Invalid component mapping: '{mapping}'. Expected format: 'OldName=NewName'", fg="red"), err=True)
+            click.echo(click.style(f"Invalid component mapping: '{mapping}'. Expected format: 'NewName=OldName'", fg="red"), err=True)
             raise SystemExit(1)
-        old_name, new_name = mapping.split("=", 1)
+        new_name, old_name = mapping.split("=", 1)
         component_map[old_name.strip()] = new_name.strip()
 
     try:

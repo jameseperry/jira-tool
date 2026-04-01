@@ -16,7 +16,7 @@ def plan():
 @click.argument("output_file", required=False)
 @click.option("--merge-from", "-f", "source_project", required=True, help="Source project key to merge from")
 @click.option("--merge-into", "-i", "target_project", required=True, help="Target project key to merge into")
-@click.option("--component", "-c", "components", multiple=True, help="Only migrate specific components (default: all)")
+@click.option("--component", "-c", "components", multiple=True, help='Migrate components (use "NewName=OldName" to rename, or just "Name" to keep same)')
 @click.option("--skip-boards", is_flag=True, default=False, help="Don't recreate boards in target project")
 @click.option("--no-dry-run", is_flag=True, default=False, help="Generate script without dry-run mode (execute immediately)")
 @click.pass_obj
@@ -42,35 +42,59 @@ def project_merge(
     \b
     Examples:
       # Generate migration script to file (starts in dry-run mode)
-      jira-tool plan project-merge migrate.sh -f AIGENPI -i AISOLVE
+      jira-tool plan project-merge migrate.sh -f OLDPROJ -i NEWPROJ
 
       # Generate to stdout
-      jira-tool plan project-merge -f AIGENPI -i AISOLVE
+      jira-tool plan project-merge -f OLDPROJ -i NEWPROJ
 
       # Execute immediately (no dry-run)
-      jira-tool plan project-merge -f AIGENPI -i AISOLVE --no-dry-run | sh
+      jira-tool plan project-merge -f OLDPROJ -i NEWPROJ --no-dry-run | sh
 
       # Only migrate specific components
-      jira-tool plan project-merge migrate.sh -f AIGENPI -i AISOLVE -c rocWMMA
+      jira-tool plan project-merge migrate.sh -f OLDPROJ -i NEWPROJ -c ComponentName
+
+      # Rename components during migration
+      jira-tool plan project-merge migrate.sh -f OLDPROJ -i NEWPROJ -c "NewName=OldName" -c "API=Backend API"
 
       # Skip board recreation
-      jira-tool plan project-merge migrate.sh -f AIGENPI -i AISOLVE --skip-boards
+      jira-tool plan project-merge migrate.sh -f OLDPROJ -i NEWPROJ --skip-boards
     """
     try:
         # Gather information from source project
         click.echo(f"# Analyzing source project: {source_project}...", err=True)
 
+        # Parse component specifications (NewName=OldName or just Name)
+        component_mapping = {}  # old_name -> new_name
+        source_component_names = []  # Which components to migrate
+
+        if components:
+            for comp_spec in components:
+                if "=" in comp_spec:
+                    # Rename: NewName=OldName
+                    new_name, old_name = comp_spec.split("=", 1)
+                    new_name = new_name.strip()
+                    old_name = old_name.strip()
+                    component_mapping[old_name] = new_name
+                    source_component_names.append(old_name)
+                else:
+                    # Keep same name
+                    name = comp_spec.strip()
+                    component_mapping[name] = name
+                    source_component_names.append(name)
+
         # Get components
         all_components = ctx.client.get_project_components(source_project)
-        if components:
+        if source_component_names:
             # Filter to specific components
-            source_components = [c for c in all_components if c.get("name") in components]
-            if len(source_components) != len(components):
+            source_components = [c for c in all_components if c.get("name") in source_component_names]
+            if len(source_components) != len(source_component_names):
                 found = {c.get("name") for c in source_components}
-                missing = set(components) - found
+                missing = set(source_component_names) - found
                 click.echo(f"# Warning: Components not found: {', '.join(missing)}", err=True)
         else:
+            # No filter - migrate all and keep names
             source_components = all_components
+            component_mapping = {c.get("name", ""): c.get("name", "") for c in all_components}
 
         click.echo(f"# Found {len(source_components)} components to migrate", err=True)
 
@@ -132,12 +156,13 @@ def project_merge(
         script_lines.append("")
 
         for comp in source_components:
-            name = comp.get("name", "")
+            old_name = comp.get("name", "")
+            new_name = component_mapping.get(old_name, old_name)
             description = comp.get("description", "")
             lead_id = comp.get("lead", {}).get("accountId") if comp.get("lead") else None
             assignee_type = comp.get("assigneeType", "")
 
-            cmd = f'jira-tool component create {target_project} "{name}"'
+            cmd = f'jira-tool component create {target_project} "{new_name}"'
             if description:
                 # Escape quotes in description
                 escaped_desc = description.replace('"', '\\"')
@@ -161,18 +186,22 @@ def project_merge(
     script_lines.append("")
 
     if source_components:
-        # Build component mapping argument
+        # Build component mapping argument (new_name=old_name)
         comp_map_args = []
         for comp in source_components:
-            name = comp.get("name", "")
-            comp_map_args.append(f'--map-component "{name}={name}"')
+            old_name = comp.get("name", "")
+            new_name = component_mapping.get(old_name, old_name)
+            comp_map_args.append(f'--map-component "{new_name}={old_name}"')
         comp_map_str = " ".join(comp_map_args)
 
         # For each component, get and move its issues
         for comp in source_components:
-            name = comp.get("name", "")
-            script_lines.append(f'# Moving issues in component: {name}')
-            script_lines.append(f'ISSUES=$(jira-tool issue search --project {source_project} --component "{name}" --list)')
+            old_name = comp.get("name", "")
+            new_name = component_mapping.get(old_name, old_name)
+            script_lines.append(f'# Moving issues in component: {old_name}')
+            if old_name != new_name:
+                script_lines.append(f'# (will be renamed to: {new_name})')
+            script_lines.append(f'ISSUES=$(jira-tool issue search --project {source_project} --component "{old_name}" --list)')
             script_lines.append('for issue in $ISSUES; do')
             script_lines.append(f'  echo "  Moving $issue..."')
             script_lines.append(f'  jira-tool issue move "$issue" {target_project} {comp_map_str}')
@@ -205,8 +234,9 @@ def project_merge(
 
             # Try to get the filter for this board
             try:
-                board_details = ctx.client.get_board(board_id)
-                filter_id = board_details.get("filter", {}).get("id")
+                # Use the configuration endpoint to get filter info
+                board_config = ctx.client.get_board_configuration(board_id)
+                filter_id = board_config.get("filter", {}).get("id")
                 if filter_id:
                     filter_info = ctx.client.get_filter(filter_id)
                     original_jql = filter_info.get("jql", "")
@@ -216,6 +246,13 @@ def project_merge(
                     updated_jql = updated_jql.replace(f'project = "{source_project}"', f'project = "{target_project}"')
                     updated_jql = updated_jql.replace(f'project={source_project}', f'project={target_project}')
 
+                    # Update component names in JQL if they were renamed
+                    for old_name, new_name in component_mapping.items():
+                        if old_name != new_name:
+                            # Replace component references in JQL
+                            updated_jql = updated_jql.replace(f'component = "{old_name}"', f'component = "{new_name}"')
+                            updated_jql = updated_jql.replace(f"component = '{old_name}'", f"component = '{new_name}'")
+
                     # Escape quotes for bash
                     escaped_jql = updated_jql.replace('"', '\\"')
 
@@ -224,8 +261,16 @@ def project_merge(
                     script_lines.append(f'  --filter-jql "{escaped_jql}" \\')
                     script_lines.append(f'  --type {board_type}')
                     script_lines.append("")
-            except JiraError:
-                # If we can't get filter, just add a comment
+                else:
+                    # No filter ID found - likely a Company-managed board
+                    script_lines.append(f'# Board: {board_name} (ID: {board_id})')
+                    script_lines.append(f'# NOTE: This appears to be a Company-managed board (no JQL filter).')
+                    script_lines.append(f'#       Company-managed boards cannot be automatically migrated.')
+                    script_lines.append(f'#       You will need to manually recreate this board in {target_project}.')
+                    script_lines.append("")
+            except JiraError as e:
+                # If we can't get filter, just add a comment with error detail
+                click.echo(f"# Warning: Could not fetch filter for board {board_name} (ID: {board_id}): {e}", err=True)
                 script_lines.append(f'# Board: {board_name} (ID: {board_id}) - could not fetch filter, create manually')
                 script_lines.append("")
 

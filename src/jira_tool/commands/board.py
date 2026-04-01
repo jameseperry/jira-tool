@@ -16,19 +16,27 @@ def board():
 @click.option("--project", "-p", default=None, help="Filter by project key")
 @click.option("--type", "-t", "board_type", type=click.Choice(["scrum", "kanban"], case_sensitive=False), default=None, help="Filter by board type")
 @click.option("--name", "-n", default=None, help="Filter by board name (contains match)")
+@click.option("--include-related", is_flag=True, default=False, help="Include boards from other projects whose filters mention this project")
 @click.option("--json", "output_format", flag_value="json", help="Output as JSON")
 @click.option("--yaml", "output_format", flag_value="yaml", help="Output as YAML")
 @click.pass_obj
-def board_list(ctx, project: str | None, board_type: str | None, name: str | None, output_format: str | None):
+def board_list(ctx, project: str | None, board_type: str | None, name: str | None, include_related: bool, output_format: str | None):
     """List all boards.
+
+    By default, when filtering by project, only shows boards that belong to that
+    project. Use --include-related to also show boards from other projects whose
+    filters reference the target project.
 
     \b
     Examples:
       # List all boards
       jira-tool board list
 
-      # List boards for a specific project
-      jira-tool board list -p AISOLVE
+      # List boards that belong to a project
+      jira-tool board list -p MYPROJ
+
+      # Include boards from other projects that reference the project
+      jira-tool board list -p MYPROJ --include-related
 
       # List only scrum boards
       jira-tool board list -t scrum
@@ -39,6 +47,7 @@ def board_list(ctx, project: str | None, board_type: str | None, name: str | Non
             board_type=board_type,
             name=name,
             max_results=100,
+            strict_project_filter=not include_related,
         )
     except JiraError as e:
         click.echo(click.style(e.format_error(), fg="red"), err=True)
@@ -208,7 +217,7 @@ def board_create(
       jira-tool board create "My Board" --filter-id 12345
 
       # Create board with new filter from JQL
-      jira-tool board create "AISOLVE Board" --filter-jql "project = AISOLVE" --filter-name "AISOLVE Filter"
+      jira-tool board create "Project Board" --filter-jql "project = MYPROJ" --filter-name "Project Filter"
 
       # Create kanban board
       jira-tool board create "Support Board" -t kanban --filter-jql "project = SUPPORT"

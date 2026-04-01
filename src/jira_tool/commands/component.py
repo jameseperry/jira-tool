@@ -22,11 +22,11 @@ def component_list(ctx, project: str, output_format: str | None):
 
     \b
     Examples:
-      # List all components in AISOLVE project
-      jira-tool component list AISOLVE
+      # List all components in a project
+      jira-tool component list MYPROJ
 
       # Output as JSON
-      jira-tool component list AISOLVE --json
+      jira-tool component list MYPROJ --json
     """
     try:
         components = ctx.client.get_project_components(project)
@@ -98,13 +98,13 @@ def component_create(
     \b
     Examples:
       # Create a simple component
-      jira-tool component create AISOLVE "Backend API"
+      jira-tool component create MYPROJ "Backend API"
 
       # Create with description
-      jira-tool component create AISOLVE "Frontend" -d "All UI-related tickets"
+      jira-tool component create MYPROJ "Frontend" -d "All UI-related tickets"
 
       # Create with component lead and assignee type
-      jira-tool component create AISOLVE "DevOps" -l 123abc -a COMPONENT_LEAD
+      jira-tool component create MYPROJ "DevOps" -l 123abc -a COMPONENT_LEAD
     """
     # Check global dry-run flag
     if ctx.dry_run:

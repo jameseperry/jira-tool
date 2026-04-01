@@ -19,7 +19,7 @@ from jira_tool.commands.issue import (
 
 @issue.command("search")
 @click.option("--jql", default=None, help="Raw JQL query string (overrides other filters)")
-@click.option("--project", "-p", default=None, help="Project key (e.g., AIGENPI)")
+@click.option("--project", "-p", default=None, help="Project key (e.g., MYPROJ)")
 @click.option("--component", "-c", multiple=True, help="Component name (can specify multiple)")
 @click.option("--assignee", "-a", default=None, help="Assignee email/name (use 'me' for yourself, 'unassigned' for none)")
 @click.option("--reporter", default=None, help="Reporter email/name (use 'me' for yourself)")

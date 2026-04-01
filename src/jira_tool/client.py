@@ -934,6 +934,7 @@ class JiraClient:
         board_type: str | None = None,
         name: str | None = None,
         max_results: int = 50,
+        strict_project_filter: bool = True,
     ) -> list[dict[str, Any]]:
         """Get all boards, optionally filtered.
 
@@ -942,6 +943,9 @@ class JiraClient:
             board_type: Filter by type (scrum, kanban)
             name: Filter by board name (contains match)
             max_results: Maximum results to return
+            strict_project_filter: If True and project_key is set, only return boards
+                                  that belong to that project (not just boards whose
+                                  filters mention it)
 
         Returns:
             List of board dictionaries
@@ -955,7 +959,16 @@ class JiraClient:
             params["name"] = name
 
         result = self.agile_get("board", params=params)
-        return result.get("values", [])
+        boards = result.get("values", [])
+
+        # Post-filter to only include boards that actually belong to the project
+        if project_key and strict_project_filter:
+            boards = [
+                b for b in boards
+                if b.get("location", {}).get("projectKey") == project_key
+            ]
+
+        return boards
 
     def get_board(self, board_id: int | str) -> dict[str, Any]:
         """Get a specific board by ID.
