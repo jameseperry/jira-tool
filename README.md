@@ -356,6 +356,3 @@ pytest
 mypy src/jira_tool
 ```
 
-## License
-
-MIT
